@@ -249,63 +249,97 @@ st.divider()
 
 
 # 保留有效地图坐标 / Keep valid map coordinates
-mappable_df = (
-    filtered_df[
-        filtered_df[
-            "Valid_Coordinates"
-        ]
-    ]
-    .copy()
-)
+mappable_df = filtered_df.loc[
+    filtered_df["Valid_Coordinates"].fillna(False),
+    ["Incident ID", "Latitude", "Longitude"],
+].copy()
 
-
-# 避免同一案件重复绘制 / Avoid duplicate incident points
-map_df = (
-    mappable_df[
-        [
-            "Incident ID",
-            "Latitude",
-            "Longitude",
-        ]
-    ]
-    .drop_duplicates(
-        subset=[
-            "Incident ID",
-            "Latitude",
-            "Longitude",
-        ]
+# 确保经纬度为数值 / Ensure numeric coordinates
+for column in ["Latitude", "Longitude"]:
+    mappable_df[column] = pd.to_numeric(
+        mappable_df[column],
+        errors="coerce",
     )
+
+mappable_df = mappable_df.dropna(
+    subset=["Incident ID", "Latitude", "Longitude"]
 )
 
+# 避免同一案件在同一坐标重复计数
+map_df = mappable_df.drop_duplicates(
+    subset=["Incident ID", "Latitude", "Longitude"]
+)
+
+if map_df.empty:
+    st.warning("No mappable incidents match the selected filters.")
+    st.stop()
+
+# 按精确经纬度汇总不同案件数，不对坐标四舍五入
+point_df = (
+    map_df.groupby(
+        ["Latitude", "Longitude"],
+        as_index=False,
+        observed=True,
+    )["Incident ID"]
+    .nunique()
+    .rename(columns={"Incident ID": "Incident_Count"})
+)
+
+# 百分位：案件数 <= 当前点案件数的坐标点占比
+# method="max" 使案件数相同的点获得相同的累计百分位
+point_df["Count_Percentile"] = (
+    point_df["Incident_Count"]
+    .rank(method="max", pct=True)
+    .mul(100)
+)
+
+# 提前格式化悬停文本
+point_df["Count_Label"] = point_df["Incident_Count"].map(
+    lambda value: f"{int(value):,}"
+)
+point_df["Latitude_Label"] = point_df["Latitude"].map(
+    lambda value: f"{value:.6f}"
+)
+point_df["Longitude_Label"] = point_df["Longitude"].map(
+    lambda value: f"{value:.6f}"
+)
+point_df["Percentile_Label"] = point_df["Count_Percentile"].map(
+    lambda value: f"{value:.1f}%"
+)
+
+# 小案件数先画，大案件数后画，方便选择重叠区域中的高计数点
+point_df = point_df.sort_values(
+    ["Incident_Count", "Latitude", "Longitude"]
+).reset_index(drop=True)
+
+show_hover_points = st.checkbox(
+    "Show hover points",
+    value=True,
+    help="Hover over a point to inspect its incident count and percentile.",
+)
 
 # 地图视角 / Map view
 view_state = pdk.ViewState(
     latitude=39.13,
     longitude=-77.20,
     zoom=9.4,
-    pitch=0
+    pitch=0,
 )
 
-
-# 犯罪密度热力图 / Crime density heatmap
+# 热力图：按每个坐标的案件数加权
 heatmap_layer = pdk.Layer(
     "HeatmapLayer",
-
-    data=map_df,
-
-    get_position=[
-        "Longitude",
-        "Latitude"
+    id="crime-heatmap",
+    data=point_df[
+        ["Latitude", "Longitude", "Incident_Count"]
     ],
-
+    get_position=["Longitude", "Latitude"],
+    get_weight="Incident_Count",
+    aggregation="SUM",
     radius_pixels=35,
-
     intensity=1,
-
     threshold=0.03,
-
     pickable=False,
-
     color_range=[
         [255, 255, 178, 255],
         [254, 217, 118, 255],
@@ -313,35 +347,62 @@ heatmap_layer = pdk.Layer(
         [253, 141, 60, 255],
         [240, 59, 32, 255],
         [189, 0, 38, 255],
-    ]
-)
-
-
-# 创建地图 / Build map
-deck = pdk.Deck(
-    layers=[
-        heatmap_layer
     ],
-    initial_view_state=view_state,
-    map_style="light"
 )
 
+layers = [heatmap_layer]
 
-# 显示地图 / Display map
-if map_df.empty:
-
-    st.warning(
-        "No mappable incidents match the selected filters."
+if show_hover_points:
+    # 可悬停小圆点 / Pickable point overlay
+    point_layer = pdk.Layer(
+        "ScatterplotLayer",
+        id="crime-hover-points",
+        data=point_df,
+        get_position=["Longitude", "Latitude"],
+        radius_units="pixels",
+        get_radius=4,
+        filled=True,
+        stroked=True,
+        get_fill_color=[120, 30, 30, 65],
+        get_line_color=[100, 30, 30, 130],
+        line_width_units="pixels",
+        get_line_width=0.5,
+        pickable=True,
+        auto_highlight=True,
+        highlight_color=[255, 255, 255, 220],
     )
+    layers.append(point_layer)
 
-else:
+# 悬停信息 / Tooltip
+tooltip = {
+    "html": (
+        "<b>Recorded location</b><br/>"
+        "<b>Distinct incidents:</b> {Count_Label}<br/>"
+        "<b>Latitude:</b> {Latitude_Label}<br/>"
+        "<b>Longitude:</b> {Longitude_Label}<br/>"
+        "<b>Incident-count percentile:</b> {Percentile_Label}"
+    ),
+    "style": {
+        "backgroundColor": "#202938",
+        "color": "#ffffff",
+        "fontSize": "14px",
+        "padding": "12px",
+        "borderRadius": "8px",
+    },
+}
 
-    st.pydeck_chart(
-        deck,
-        use_container_width=True,
-        height=700
-    )
+deck = pdk.Deck(
+    layers=layers,
+    initial_view_state=view_state,
+    map_style="light",
+    tooltip=tooltip,
+)
 
+st.pydeck_chart(
+    deck,
+    use_container_width=True,
+    height=700,
+)
 
 # 热力图图例 / Heatmap legend
 st.markdown(
@@ -359,17 +420,30 @@ st.markdown(
     'rgb(240,59,32),'
     'rgb(189,0,38));">'
     '</div>'
-    '<span style="font-size:14px;">'
-    'High'
-    '</span>'
+    '<span style="font-size:14px;">High</span>'
     '</div>',
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
-
-# 地图说明 / Map note
 st.caption(
-    "The heatmap displays distinct incidents with valid coordinates. "
-    "Multiple offense rows belonging to the same incident at the same "
-    "location are not plotted repeatedly."
+    "Hover over a point to view distinct incidents at that exact "
+    "recorded coordinate. Zoom in to separate nearby points. "
+    "Counts and percentiles update with the selected filters."
+)
+
+st.caption(
+    "The incident-count percentile is the percentage of mapped "
+    "locations with an incident count less than or equal to this "
+    "location's count. Tied counts receive the same percentile. "
+    "Only locations with matching incidents are included; "
+    "this is not a measure of personal victimization risk."
+)
+
+st.caption(
+    "Heatmap colors show smoothed relative density across nearby "
+    "locations, while tooltips describe individual recorded coordinates. "
+    "Multiple offense rows from the same incident at the same location "
+    "are counted once. An incident recorded at multiple locations can "
+    "appear at each location, so point counts may sum to more than "
+    "the countywide distinct incident count."
 )
