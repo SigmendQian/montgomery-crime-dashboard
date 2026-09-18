@@ -1,6 +1,7 @@
 import json
 
 import pandas as pd
+import pydeck as pdk
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -8,31 +9,27 @@ from data_service import load_and_clean_data
 from ui import setup_page, load_with_message, source_caption
 
 
-# 设置页面并加载在线数据 / Configure the page and load online data.
+# 设置页面并加载数据 / Set up the page and load data.
 setup_page("Crime Map", "🗺️")
 
 st.write(
-    "Explore crime density. Hover over the map "
-    "to see nearby incident counts."
+    "Explore the spatial distribution of crime incidents "
+    "across Montgomery County."
 )
 
 df = load_with_message(load_and_clean_data)
 source_caption(df)
 
 if df.empty:
-    st.warning("No crime records are available.")
+    st.warning("No data is available.")
     st.stop()
 
 
-# 创建犯罪大类筛选器 / Create the main crime category filter.
+# 设置犯罪类别筛选 / Configure crime category filters.
 st.sidebar.header("Map Filters")
 
 crime_name1_options = ["All"] + sorted(
-    df["Crime Name1"]
-    .dropna()
-    .astype(str)
-    .unique()
-    .tolist()
+    df["Crime Name1"].dropna().astype(str).unique().tolist()
 )
 
 selected_crime_name1 = st.sidebar.selectbox(
@@ -40,14 +37,12 @@ selected_crime_name1 = st.sidebar.selectbox(
     crime_name1_options,
 )
 
-
-# 根据犯罪大类更新子类选项 / Update subcategory options from the main category.
 if selected_crime_name1 == "All":
     crime_name2_options = ["All"]
 else:
     crime_name2_options = ["All"] + sorted(
         df.loc[
-            df["Crime Name1"].astype(str).eq(selected_crime_name1),
+            df["Crime Name1"].astype(str) == selected_crime_name1,
             "Crime Name2",
         ]
         .dropna()
@@ -62,11 +57,11 @@ selected_crime_name2 = st.sidebar.selectbox(
 )
 
 
-# 获取有效日期范围 / Get the valid date range.
+# 设置日期范围筛选 / Configure the date range filter.
 valid_dates = df["Date"].dropna()
 
 if valid_dates.empty:
-    st.warning("No valid incident dates are available.")
+    st.warning("No valid dates are available.")
     st.stop()
 
 min_date = valid_dates.min().date()
@@ -80,7 +75,7 @@ selected_date_range = st.sidebar.date_input(
 )
 
 
-# 创建包含结束小时的时间筛选器 / Create an hour filter that includes the ending hour.
+# 设置小时范围筛选 / Configure the hour range filter.
 start_hour, end_hour = st.sidebar.slider(
     "Hour of Day",
     min_value=0,
@@ -90,25 +85,23 @@ start_hour, end_hour = st.sidebar.slider(
 )
 
 
-# 应用犯罪类别筛选 / Apply the crime category filters.
+# 应用犯罪类别筛选 / Apply crime category filters.
 filtered_df = df
 
 if selected_crime_name1 != "All":
     filtered_df = filtered_df.loc[
-        filtered_df["Crime Name1"]
-        .astype(str)
-        .eq(selected_crime_name1)
+        filtered_df["Crime Name1"].astype(str)
+        == selected_crime_name1
     ]
 
 if selected_crime_name2 != "All":
     filtered_df = filtered_df.loc[
-        filtered_df["Crime Name2"]
-        .astype(str)
-        .eq(selected_crime_name2)
+        filtered_df["Crime Name2"].astype(str)
+        == selected_crime_name2
     ]
 
 
-# 检查是否选择完整日期范围 / Check that a complete date range is selected.
+# 筛选日期时包含结束当天 / Include the entire final day in date filtering.
 if (
     not isinstance(selected_date_range, (tuple, list))
     or len(selected_date_range) != 2
@@ -118,12 +111,11 @@ if (
 
 start_date, end_date = selected_date_range
 
-
-# 应用日期和小时筛选并包含结束日全天 / Apply date and hour filters including the full ending day.
 filtered_df = filtered_df.loc[
-    filtered_df["Date"].ge(pd.Timestamp(start_date))
-    & filtered_df["Date"].lt(
-        pd.Timestamp(end_date) + pd.Timedelta(days=1)
+    (filtered_df["Date"] >= pd.Timestamp(start_date))
+    & (
+        filtered_df["Date"]
+        < pd.Timestamp(end_date) + pd.Timedelta(days=1)
     )
     & filtered_df["Hour"].between(start_hour, end_hour)
 ]
@@ -134,37 +126,33 @@ st.caption(
 )
 
 
-# 保留具有有效地图坐标的记录 / Keep records with valid map coordinates.
-mapped = filtered_df.loc[
+# 保留有效坐标并去除重复案件位置 / Keep valid coordinates and deduplicate incident locations.
+map_df = filtered_df.loc[
     filtered_df["Valid_Coordinates"].fillna(False),
     ["Incident ID", "Latitude", "Longitude"],
 ].copy()
 
 for column in ["Latitude", "Longitude"]:
-    mapped[column] = pd.to_numeric(
-        mapped[column],
+    map_df[column] = pd.to_numeric(
+        map_df[column],
         errors="coerce",
     )
 
-mapped = mapped.dropna(
+map_df = map_df.dropna(
     subset=["Incident ID", "Latitude", "Longitude"]
 )
 
-mapped = mapped.loc[
-    mapped["Latitude"].between(-85.05112878, 85.05112878)
-    & mapped["Longitude"].between(-180, 180)
-].copy()
-
-
-# 同一案件在同一坐标只保留一次 / Keep each incident only once at each coordinate.
-mapped = mapped.drop_duplicates(
+map_df = map_df.loc[
+    map_df["Latitude"].between(-85.05112878, 85.05112878)
+    & map_df["Longitude"].between(-180, 180)
+].drop_duplicates(
     subset=["Incident ID", "Latitude", "Longitude"]
 )
 
 
-# 计算事件总数和地图覆盖率 / Calculate distinct incidents and map coverage.
+# 显示案件数量与地图覆盖率 / Display incident totals and map coverage.
 distinct_incidents = filtered_df["Incident ID"].nunique()
-mappable_incidents = mapped["Incident ID"].nunique()
+mappable_incidents = map_df["Incident ID"].nunique()
 
 map_coverage = (
     mappable_incidents / distinct_incidents * 100
@@ -174,609 +162,522 @@ map_coverage = (
 
 col1, col2, col3 = st.columns(3)
 
-col1.metric(
-    "Distinct Incidents",
-    f"{distinct_incidents:,}",
-)
-
-col2.metric(
-    "Mappable Incidents",
-    f"{mappable_incidents:,}",
-)
-
-col3.metric(
-    "Map Coverage",
-    f"{map_coverage:.1f}%",
-)
+col1.metric("Distinct Incidents", f"{distinct_incidents:,}")
+col2.metric("Mappable Incidents", f"{mappable_incidents:,}")
+col3.metric("Map Coverage", f"{map_coverage:.1f}%")
 
 st.divider()
 
-if mapped.empty:
-    st.warning(
-        "No mappable incidents match the selected filters."
-    )
+if map_df.empty:
+    st.warning("No mappable incidents match the selected filters.")
     st.stop()
 
 
-# 将案件编号编码为整数以支持浏览器内去重 / Encode incident IDs as integers for browser-side deduplication.
-mapped["Incident_Key"] = pd.factorize(
-    mapped["Incident ID"],
+# 使用整数编号在悬停统计中识别重复案件 / Use integer identifiers to deduplicate hover counts.
+map_df["Incident_Key"] = pd.factorize(
+    map_df["Incident ID"],
     sort=False,
 )[0]
 
 
-# 按精确坐标汇总不同案件编号 / Group distinct incident identifiers by exact coordinates.
+# 合并相同坐标并保留案件编号 / Group identical coordinates while retaining incident identifiers.
 locations = (
-    mapped.groupby(
+    map_df.groupby(
         ["Latitude", "Longitude"],
-        observed=True,
+        sort=False,
     )["Incident_Key"]
-    .agg(
-        lambda values: [
-            int(value) for value in pd.unique(values)
-        ]
-    )
+    .agg(lambda values: [int(value) for value in pd.unique(values)])
     .reset_index()
 )
 
-
-# 在内存中构造地图数据而不创建本地快照 / Build map data in memory without creating local snapshots.
 payload = [
     [
-        float(row.Latitude),
         float(row.Longitude),
+        float(row.Latitude),
         row.Incident_Key,
     ]
     for row in locations.itertuples(index=False)
 ]
 
-payload_json = json.dumps(
-    payload,
+
+# 读取与最初代码相同的浅色底图配置 / Read the same light basemap configuration as the original code.
+original_map_style = pdk.Deck(
+    map_style="light",
+).map_style
+
+
+# 恢复最初的六段热力颜色 / Restore the original six heatmap colors.
+original_colors = [
+    [255, 255, 178, 255],
+    [254, 217, 118, 255],
+    [254, 178, 76, 255],
+    [253, 141, 60, 255],
+    [240, 59, 32, 255],
+    [189, 0, 38, 255],
+]
+
+
+# 将地图数据安全地传递给浏览器 / Safely pass map data to the browser.
+config_json = json.dumps(
+    {
+        "points": payload,
+        "mapStyle": original_map_style,
+        "colors": original_colors,
+    },
     ensure_ascii=True,
-    separators=(",", ":"),
     allow_nan=False,
+    separators=(",", ":"),
 ).replace("<", "\\u003c")
 
 
-# 创建浅灰底图和高对比度热力图 / Create a light-gray basemap and a high-contrast heatmap.
+# 绘制原始热力图并在后台计算悬停案件数 / Render the original heatmap and calculate hover counts in a worker.
 map_html = r"""
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
 
-<link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
->
+    <link
+        rel="stylesheet"
+        href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
+    >
 
-<style>
-    html, body {
-        margin: 0;
-        padding: 0;
-        font-family: Arial, sans-serif;
-    }
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            font-family: Arial, sans-serif;
+        }
 
-    #map {
-        width: 100%;
-        height: 700px;
-        background: #ffffff;
-        border-radius: 10px;
-    }
+        #map {
+            position: relative;
+            width: 100%;
+            height: 700px;
+            overflow: hidden;
+            border-radius: 8px;
+            background: #f5f5f5;
+        }
 
-    .leaflet-tile-pane {
-        filter: grayscale(1) saturate(0) brightness(1.08);
-        opacity: 0.65;
-    }
+        #tooltip {
+            position: absolute;
+            display: none;
+            z-index: 20;
+            pointer-events: none;
+            padding: 10px 13px;
+            border-radius: 6px;
+            background: rgba(30, 30, 30, 0.94);
+            color: white;
+            font-size: 14px;
+            white-space: nowrap;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+        }
 
-    .leaflet-heatmap-layer {
-        pointer-events: none !important;
-    }
-
-    .crime-tooltip {
-        background: #202938;
-        color: white;
-        border: none;
-        border-radius: 7px;
-        padding: 10px 14px;
-        font-size: 14px;
-        pointer-events: none !important;
-    }
-
-    .map-legend {
-        background: rgba(255, 255, 255, 0.96);
-        padding: 10px 13px;
-        border-radius: 7px;
-        color: #334155;
-        font-size: 12px;
-        box-shadow: 0 1px 6px rgba(0, 0, 0, 0.15);
-    }
-
-    .legend-gradient {
-        width: 200px;
-        height: 13px;
-        margin: 7px 0;
-        border-radius: 4px;
-        background: linear-gradient(
-            to right,
-            #ffffb2,
-            #fec44f,
-            #fe9929,
-            #ef3b2c,
-            #bd0026,
-            #67001f
-        );
-    }
-
-    .legend-labels {
-        display: flex;
-        justify-content: space-between;
-    }
-
-    #map-message {
-        position: absolute;
-        top: 10px;
-        right: 10px;
-        z-index: 1000;
-        max-width: 260px;
-        background: rgba(255, 255, 255, 0.96);
-        color: #334155;
-        padding: 8px 12px;
-        border-radius: 6px;
-        font-size: 12px;
-        pointer-events: none;
-    }
-</style>
+        #status {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            z-index: 25;
+            max-width: 80%;
+            padding: 8px 12px;
+            border-radius: 5px;
+            background: rgba(255, 255, 255, 0.95);
+            color: #444;
+            font-size: 13px;
+            pointer-events: none;
+        }
+    </style>
 </head>
 
 <body>
-<div id="map"></div>
-<div id="map-message">Preparing hover counts…</div>
+    <div id="map">
+        <div id="tooltip"></div>
+        <div id="status">Preparing map...</div>
+    </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script src="https://unpkg.com/deck.gl@8.9.36/dist.min.js"></script>
 
-<script>
-(function () {
-    "use strict";
+    <script>
+    (() => {
+        const config = __CONFIG__;
+        const container = document.getElementById("map");
+        const tooltip = document.getElementById("tooltip");
+        const status = document.getElementById("status");
 
-    const rows = __CRIME_PAYLOAD__;
-    const mapElement = document.getElementById("map");
-    const messageElement = document.getElementById("map-message");
-
-    if (!window.L || !L.heatLayer) {
-        messageElement.textContent =
-            "Map libraries could not load. Check your connection and refresh.";
-        return;
-    }
-
-    const map = L.map("map", {
-        center: [39.13, -77.20],
-        zoom: 10,
-        minZoom: 7,
-        maxZoom: 19,
-        zoomControl: true,
-        scrollWheelZoom: true,
-        doubleClickZoom: true,
-        touchZoom: true,
-        dragging: true,
-        zoomSnap: 1,
-        zoomDelta: 1,
-        zoomAnimation: false,
-        fadeAnimation: false
-    });
-
-    L.tileLayer(
-        "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-        {
-            maxZoom: 19,
-            attribution:
-                '&copy; <a href="https://www.openstreetmap.org/copyright">' +
-                'OpenStreetMap</a> contributors'
-        }
-    ).addTo(map);
-
-    L.control.scale({
-        imperial: false,
-        position: "bottomleft"
-    }).addTo(map);
-
-    const heatPoints = [];
-    const queryPoints = [];
-
-    for (const row of rows) {
-        const count = row[2].length;
-
-        heatPoints.push([row[0], row[1], count]);
-
-        const point = map.project([row[0], row[1]], 0);
-
-        queryPoints.push({
-            x: point.x,
-            y: point.y,
-            ids: row[2]
-        });
-    }
-
-    const sortedWeights = heatPoints
-        .map(function (point) {
-            return point[2];
-        })
-        .sort(function (a, b) {
-            return a - b;
-        });
-
-    const referenceIndex = Math.min(
-        sortedWeights.length - 1,
-        Math.floor((sortedWeights.length - 1) * 0.98)
-    );
-
-    const colorReference = Math.max(
-        1,
-        sortedWeights[referenceIndex]
-    );
-
-    const heat = L.heatLayer(heatPoints, {
-        radius: 16,
-        blur: 12,
-        minOpacity: 0.12,
-        max: colorReference,
-        maxZoom: map.getZoom(),
-        gradient: {
-            0.05: "#ffffb2",
-            0.25: "#fec44f",
-            0.45: "#fe9929",
-            0.65: "#ef3b2c",
-            0.82: "#bd0026",
-            1.00: "#67001f"
-        }
-    }).addTo(map);
-
-    const legend = L.control({
-        position: "bottomright"
-    });
-
-    legend.onAdd = function () {
-        const div = L.DomUtil.create("div", "map-legend");
-
-        div.innerHTML =
-            "<b>Relative crime density</b>" +
-            '<div class="legend-gradient"></div>' +
-            '<div class="legend-labels">' +
-            "<span>Low</span><span>High</span></div>";
-
-        L.DomEvent.disableClickPropagation(div);
-        L.DomEvent.disableScrollPropagation(div);
-
-        return div;
-    };
-
-    legend.addTo(map);
-
-    const workerSource = `
-        let points = [];
-
-        function lowerBound(value) {
-            let left = 0;
-            let right = points.length;
-
-            while (left < right) {
-                const middle = (left + right) >>> 1;
-
-                if (points[middle].x < value) {
-                    left = middle + 1;
-                } else {
-                    right = middle;
-                }
-            }
-
-            return left;
+        if (!window.deck || !window.maplibregl) {
+            status.textContent =
+                "Map libraries could not load. Check your internet connection.";
+            return;
         }
 
-        self.onmessage = function (event) {
-            const message = event.data;
+        const workerSource = `
+            let points = [];
 
-            if (message.type === "init") {
-                points = message.points;
+            function project(lng, lat) {
+                const sine = Math.sin(lat * Math.PI / 180);
 
-                points.sort(function (a, b) {
-                    return a.x - b.x;
-                });
-
-                self.postMessage({type: "ready"});
-                return;
+                return [
+                    (lng + 180) / 360,
+                    0.5 - Math.log((1 + sine) / (1 - sine))
+                        / (4 * Math.PI)
+                ];
             }
 
-            if (message.type !== "query") {
-                return;
-            }
+            function lowerBound(x) {
+                let left = 0;
+                let right = points.length;
 
-            const x = message.x;
-            const y = message.y;
-            const radius = message.radius;
-            const radiusSquared = radius * radius;
-            const rightEdge = x + radius;
-            const ids = new Set();
+                while (left < right) {
+                    const middle = (left + right) >>> 1;
 
-            let index = lowerBound(x - radius);
-
-            for (; index < points.length; index++) {
-                const point = points[index];
-
-                if (point.x > rightEdge) {
-                    break;
-                }
-
-                const dx = point.x - x;
-                const dy = point.y - y;
-
-                if (dx * dx + dy * dy <= radiusSquared) {
-                    for (const id of point.ids) {
-                        ids.add(id);
+                    if (points[middle].x < x) {
+                        left = middle + 1;
+                    } else {
+                        right = middle;
                     }
                 }
+
+                return left;
             }
 
-            self.postMessage({
-                type: "result",
-                token: message.token,
-                count: ids.size
-            });
-        };
-    `;
+            self.onmessage = ({data}) => {
+                if (data.type === "init") {
+                    points = data.points.map(point => {
+                        const xy = project(point[0], point[1]);
 
-    let worker = null;
-    let workerURL = null;
-    let workerReady = false;
-    let queryInFlight = false;
-    let pendingQuery = null;
+                        return {
+                            x: xy[0],
+                            y: xy[1],
+                            ids: point[2]
+                        };
+                    });
 
-    let moving = false;
-    let mouseInside = false;
-    let queryToken = 0;
-    let timer = null;
-    let hoverPosition = null;
-
-    const HOVER_RADIUS_PIXELS = 18;
-
-    const tooltip = L.tooltip({
-        direction: "top",
-        offset: [0, -8],
-        className: "crime-tooltip",
-        opacity: 0.98,
-        interactive: false
-    });
-
-    function sendPendingQuery() {
-        if (
-            !workerReady ||
-            queryInFlight ||
-            !pendingQuery ||
-            moving ||
-            !mouseInside
-        ) {
-            return;
-        }
-
-        queryInFlight = true;
-        worker.postMessage(pendingQuery);
-        pendingQuery = null;
-    }
-
-    function cancelHover() {
-        queryToken += 1;
-        clearTimeout(timer);
-        pendingQuery = null;
-        tooltip.remove();
-    }
-
-    function showWorkerError() {
-        workerReady = false;
-        queryInFlight = false;
-        pendingQuery = null;
-        tooltip.remove();
-
-        messageElement.style.display = "block";
-        messageElement.textContent =
-            "Hover counting is unavailable. Refresh the page to retry.";
-
-        if (worker) {
-            worker.terminate();
-        }
-
-        if (workerURL) {
-            URL.revokeObjectURL(workerURL);
-            workerURL = null;
-        }
-    }
-
-    try {
-        const blob = new Blob(
-            [workerSource],
-            {type: "text/javascript"}
-        );
-
-        workerURL = URL.createObjectURL(blob);
-        worker = new Worker(workerURL);
-
-        worker.onmessage = function (event) {
-            const message = event.data;
-
-            if (message.type === "ready") {
-                workerReady = true;
-                messageElement.style.display = "none";
-
-                if (workerURL) {
-                    URL.revokeObjectURL(workerURL);
-                    workerURL = null;
+                    points.sort((a, b) => a.x - b.x);
+                    self.postMessage({type: "ready"});
+                    return;
                 }
 
-                sendPendingQuery();
+                if (data.type === "query") {
+                    const xy = project(data.lng, data.lat);
+                    const radius = data.radius;
+                    const radiusSquared = radius * radius;
+                    const incidents = new Set();
+                    let index = lowerBound(xy[0] - radius);
+
+                    while (
+                        index < points.length
+                        && points[index].x <= xy[0] + radius
+                    ) {
+                        const point = points[index];
+                        const dx = point.x - xy[0];
+                        const dy = point.y - xy[1];
+
+                        if (dx * dx + dy * dy <= radiusSquared) {
+                            for (const id of point.ids) {
+                                incidents.add(id);
+                            }
+                        }
+
+                        index += 1;
+                    }
+
+                    self.postMessage({
+                        type: "result",
+                        token: data.token,
+                        count: incidents.size,
+                        screenX: data.screenX,
+                        screenY: data.screenY
+                    });
+                }
+            };
+        `;
+
+        let worker;
+        let workerURL;
+        let ready = false;
+        let busy = false;
+        let pending = null;
+        let timer = null;
+        let token = 0;
+        let dragging = false;
+        let viewer;
+
+        function hideTooltip() {
+            token += 1;
+            pending = null;
+            clearTimeout(timer);
+            tooltip.style.display = "none";
+        }
+
+        function dispatchQuery() {
+            if (!ready || busy || !pending) {
                 return;
             }
 
-            if (message.type !== "result") {
-                return;
+            const query = pending;
+            pending = null;
+            busy = true;
+            worker.postMessage(query);
+        }
+
+        function workerFailure() {
+            ready = false;
+            busy = false;
+            hideTooltip();
+
+            if (worker) {
+                worker.terminate();
             }
 
-            queryInFlight = false;
-
-            if (
-                message.token === queryToken &&
-                mouseInside &&
-                !moving &&
-                hoverPosition
-            ) {
-                tooltip
-                    .setLatLng(hoverPosition)
-                    .setContent(
-                        "Distinct incidents: <b>" +
-                        message.count.toLocaleString("en-US") +
-                        "</b>"
-                    )
-                    .addTo(map);
+            if (workerURL) {
+                URL.revokeObjectURL(workerURL);
+                workerURL = null;
             }
 
-            sendPendingQuery();
-        };
+            status.style.display = "block";
+            status.textContent =
+                "Hover counts could not initialize. Refresh the page.";
+        }
 
-        worker.onerror = showWorkerError;
+        try {
+            workerURL = URL.createObjectURL(
+                new Blob([workerSource], {type: "text/javascript"})
+            );
 
-        worker.postMessage({
-            type: "init",
-            points: queryPoints
-        });
+            worker = new Worker(workerURL);
+            worker.onerror = workerFailure;
 
-    } catch (error) {
-        showWorkerError();
-        console.error(error);
-    }
+            worker.onmessage = ({data}) => {
+                if (data.type === "ready") {
+                    ready = true;
+                    status.style.display = "none";
 
-    function prepareQuery(position, token) {
-        const projected = map.project(position, 0);
+                    URL.revokeObjectURL(workerURL);
+                    workerURL = null;
+                    dispatchQuery();
+                    return;
+                }
 
-        pendingQuery = {
-            type: "query",
-            token: token,
-            x: projected.x,
-            y: projected.y,
-            radius:
-                HOVER_RADIUS_PIXELS /
-                Math.pow(2, map.getZoom())
-        };
+                if (data.type === "result") {
+                    busy = false;
 
-        sendPendingQuery();
-    }
+                    if (data.token === token && !dragging) {
+                        tooltip.textContent =
+                            "Distinct incidents: "
+                            + data.count.toLocaleString("en-US");
 
-    map.on("mousemove", function (event) {
-        mouseInside = true;
+                        tooltip.style.display = "block";
 
-        if (moving) {
+                        const left = Math.max(
+                            8,
+                            Math.min(
+                                data.screenX + 14,
+                                container.clientWidth
+                                    - tooltip.offsetWidth - 8
+                            )
+                        );
+
+                        const top = Math.max(
+                            8,
+                            Math.min(
+                                data.screenY + 14,
+                                container.clientHeight
+                                    - tooltip.offsetHeight - 8
+                            )
+                        );
+
+                        tooltip.style.left = left + "px";
+                        tooltip.style.top = top + "px";
+                    }
+
+                    dispatchQuery();
+                }
+            };
+
+            worker.postMessage({
+                type: "init",
+                points: config.points
+            });
+        } catch (error) {
+            workerFailure();
+        }
+
+        try {
+            viewer = new deck.DeckGL({
+                container: "map",
+                map: maplibregl,
+                mapStyle: config.mapStyle,
+                mapOptions: {
+                    attributionControl: true
+                },
+                initialViewState: {
+                    latitude: 39.13,
+                    longitude: -77.20,
+                    zoom: 9.4,
+                    pitch: 0,
+                    bearing: 0,
+                    minZoom: 5,
+                    maxZoom: 19
+                },
+                controller: {
+                    scrollZoom: true,
+                    dragPan: true,
+                    dragRotate: false,
+                    touchZoom: true,
+                    touchRotate: false,
+                    doubleClickZoom: true,
+                    keyboard: true
+                },
+                layers: [
+                    new deck.HeatmapLayer({
+                        id: "crime-heatmap",
+                        data: config.points,
+                        getPosition: point => [point[0], point[1]],
+                        getWeight: point => point[2].length,
+                        aggregation: "SUM",
+                        radiusPixels: 35,
+                        intensity: 1,
+                        threshold: 0.03,
+                        colorRange: config.colors,
+                        pickable: false
+                    })
+                ],
+                onViewStateChange: () => {
+                    hideTooltip();
+                },
+                onError: error => {
+                    status.style.display = "block";
+                    status.textContent =
+                        "Map rendering failed. Refresh or check WebGL support.";
+                    console.error(error);
+                }
+            });
+        } catch (error) {
+            status.style.display = "block";
+            status.textContent =
+                "Map could not initialize. Check your browser and connection.";
             return;
         }
 
-        cancelHover();
-        hoverPosition = event.latlng;
+        function scheduleQuery(event) {
+            hideTooltip();
 
-        const token = queryToken;
-        const position = event.latlng;
-
-        timer = setTimeout(function () {
-            if (
-                moving ||
-                !mouseInside ||
-                token !== queryToken
-            ) {
+            if (!ready || dragging || event.buttons) {
                 return;
             }
 
-            prepareQuery(position, token);
-        }, 120);
-    });
+            const bounds = container.getBoundingClientRect();
+            const screenX = event.clientX - bounds.left;
+            const screenY = event.clientY - bounds.top;
+            const currentToken = token;
 
-    map.on("click", function (event) {
-        if (moving) {
-            return;
+            timer = setTimeout(() => {
+                if (currentToken !== token || dragging) {
+                    return;
+                }
+
+                const viewport = viewer.getViewports()[0];
+
+                if (!viewport) {
+                    return;
+                }
+
+                const coordinate = viewport.unproject([
+                    screenX,
+                    screenY
+                ]);
+
+                pending = {
+                    type: "query",
+                    token: currentToken,
+                    lng: coordinate[0],
+                    lat: coordinate[1],
+                    radius: 18 / (512 * Math.pow(2, viewport.zoom)),
+                    screenX,
+                    screenY
+                };
+
+                dispatchQuery();
+            }, 100);
         }
 
-        mouseInside = true;
-        cancelHover();
-        hoverPosition = event.latlng;
+        container.addEventListener("pointermove", scheduleQuery);
 
-        prepareQuery(event.latlng, queryToken);
-    });
-
-    mapElement.addEventListener("mouseleave", function () {
-        mouseInside = false;
-        cancelHover();
-    });
-
-    map.on("movestart zoomstart", function () {
-        moving = true;
-        cancelHover();
-    });
-
-    map.on("moveend", function () {
-        moving = false;
-    });
-
-    map.on("zoomend", function () {
-        moving = false;
-
-        heat.setOptions({
-            maxZoom: map.getZoom()
+        container.addEventListener("pointerdown", () => {
+            dragging = true;
+            hideTooltip();
         });
-    });
 
-    window.addEventListener("resize", function () {
-        map.invalidateSize({pan: false});
-    });
+        window.addEventListener("pointerup", () => {
+            dragging = false;
+        });
 
-    window.addEventListener("pagehide", function () {
-        if (worker) {
-            worker.terminate();
-        }
+        window.addEventListener("pointercancel", () => {
+            dragging = false;
+            hideTooltip();
+        });
 
-        if (workerURL) {
-            URL.revokeObjectURL(workerURL);
-        }
-    });
-})();
-</script>
+        container.addEventListener("pointerleave", hideTooltip);
+        container.addEventListener("wheel", hideTooltip, {passive: true});
+
+        window.addEventListener("pagehide", () => {
+            clearTimeout(timer);
+
+            if (worker) {
+                worker.terminate();
+            }
+
+            if (workerURL) {
+                URL.revokeObjectURL(workerURL);
+            }
+
+            if (viewer) {
+                viewer.finalize();
+            }
+        });
+    })();
+    </script>
 </body>
 </html>
 """
 
-
-# 将地图嵌入页面并保持犯罪数据仅在内存中处理 / Embed the map while keeping crime data processing in memory.
 components.html(
-    map_html.replace("__CRIME_PAYLOAD__", payload_json),
-    height=715,
+    map_html.replace("__CONFIG__", config_json),
+    height=710,
     scrolling=False,
 )
 
 
-# 说明悬停计数随缩放变化的统计范围 / Explain how the hover counting area changes with zoom.
+# 恢复最初位于地图下方的颜色比例尺 / Restore the original color legend below the map.
+st.markdown(
+    '<div style="display:flex;align-items:center;gap:10px;'
+    'margin-top:4px;margin-bottom:10px;">'
+    '<span style="font-size:14px;">'
+    'Relative crime density: Low'
+    '</span>'
+    '<div style="width:260px;height:14px;border-radius:4px;'
+    'background:linear-gradient(to right,'
+    'rgb(255,255,178),'
+    'rgb(254,217,118),'
+    'rgb(254,178,76),'
+    'rgb(253,141,60),'
+    'rgb(240,59,32),'
+    'rgb(189,0,38));">'
+    '</div>'
+    '<span style="font-size:14px;">High</span>'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+
+# 解释热力颜色与悬停数量的含义 / Explain heatmap colors and hover counts.
 st.caption(
+    "Colors show relative crime density. "
     "Hover counts show distinct incidents within 18 screen pixels "
-    "of the pointer. Zooming out expands the geographic area counted; "
-    "zooming in narrows it. Counts follow the selected filters."
-)
-
-
-# 区分热力颜色和附近案件数量 / Distinguish heatmap colors from nearby incident counts.
-st.caption(
-    "Heatmap colors show smoothed relative density. "
-    "The hover count is a local neighborhood total, "
-    "not the total for an entire colored hotspot."
-)
-
-
-# 说明增强色彩对比不会改变真实计数 / Explain that enhanced color contrast does not change actual counts.
-st.caption(
-    "Color intensity uses the 98th percentile of per-location "
-    "incident counts as a reference to improve contrast. "
-    "High intensities saturate at the darkest color. "
-    "Hover counts remain unchanged."
+    "of the cursor; this covers a larger geographic area when zoomed out. "
+    "Repeated offense rows for the same incident at the same location "
+    "are counted only once."
 )
