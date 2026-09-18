@@ -108,7 +108,7 @@ if selected_crime_name2 != "All":
     ]
 
 
-# 检查用户是否选择了完整日期范围 / Check that a complete date range is selected.
+# 检查是否选择完整日期范围 / Check that a complete date range is selected.
 if (
     not isinstance(selected_date_range, (tuple, list))
     or len(selected_date_range) != 2
@@ -162,7 +162,7 @@ mapped = mapped.drop_duplicates(
 )
 
 
-# 计算事件总数与地图覆盖率 / Calculate distinct incidents and map coverage.
+# 计算事件总数和地图覆盖率 / Calculate distinct incidents and map coverage.
 distinct_incidents = filtered_df["Incident ID"].nunique()
 mappable_incidents = mapped["Incident ID"].nunique()
 
@@ -198,7 +198,7 @@ if mapped.empty:
     st.stop()
 
 
-# 将案件编号转换为整数以支持浏览器内去重 / Encode incident IDs as integers for browser-side deduplication.
+# 将案件编号编码为整数以支持浏览器内去重 / Encode incident IDs as integers for browser-side deduplication.
 mapped["Incident_Key"] = pd.factorize(
     mapped["Incident ID"],
     sort=False,
@@ -238,7 +238,7 @@ payload_json = json.dumps(
 ).replace("<", "\\u003c")
 
 
-# 创建可缩放的热力图并在后台计算悬停案件数 / Create a zoomable heatmap with background hover counting.
+# 创建浅灰底图和高对比度热力图 / Create a light-gray basemap and a high-contrast heatmap.
 map_html = r"""
 <!DOCTYPE html>
 <html>
@@ -261,8 +261,13 @@ map_html = r"""
     #map {
         width: 100%;
         height: 700px;
-        background: #f3f4f6;
+        background: #ffffff;
         border-radius: 10px;
+    }
+
+    .leaflet-tile-pane {
+        filter: grayscale(1) saturate(0) brightness(1.08);
+        opacity: 0.65;
     }
 
     .leaflet-heatmap-layer {
@@ -280,27 +285,27 @@ map_html = r"""
     }
 
     .map-legend {
-        background: rgba(255,255,255,0.95);
-        padding: 9px 12px;
+        background: rgba(255, 255, 255, 0.96);
+        padding: 10px 13px;
         border-radius: 7px;
         color: #334155;
         font-size: 12px;
-        box-shadow: 0 1px 6px rgba(0,0,0,0.15);
+        box-shadow: 0 1px 6px rgba(0, 0, 0, 0.15);
     }
 
     .legend-gradient {
-        width: 180px;
-        height: 11px;
-        margin: 6px 0;
+        width: 200px;
+        height: 13px;
+        margin: 7px 0;
         border-radius: 4px;
         background: linear-gradient(
             to right,
             #ffffb2,
-            #fed976,
-            #feb24c,
-            #fd8d3c,
-            #f03b20,
-            #bd0026
+            #fec44f,
+            #fe9929,
+            #ef3b2c,
+            #bd0026,
+            #67001f
         );
     }
 
@@ -315,7 +320,7 @@ map_html = r"""
         right: 10px;
         z-index: 1000;
         max-width: 260px;
-        background: rgba(255,255,255,0.96);
+        background: rgba(255, 255, 255, 0.96);
         color: #334155;
         padding: 8px 12px;
         border-radius: 6px;
@@ -379,13 +384,11 @@ map_html = r"""
 
     const heatPoints = [];
     const queryPoints = [];
-    let maxCount = 1;
 
     for (const row of rows) {
         const count = row[2].length;
 
         heatPoints.push([row[0], row[1], count]);
-        maxCount = Math.max(maxCount, count);
 
         const point = map.project([row[0], row[1]], 0);
 
@@ -396,19 +399,37 @@ map_html = r"""
         });
     }
 
+    const sortedWeights = heatPoints
+        .map(function (point) {
+            return point[2];
+        })
+        .sort(function (a, b) {
+            return a - b;
+        });
+
+    const referenceIndex = Math.min(
+        sortedWeights.length - 1,
+        Math.floor((sortedWeights.length - 1) * 0.98)
+    );
+
+    const colorReference = Math.max(
+        1,
+        sortedWeights[referenceIndex]
+    );
+
     const heat = L.heatLayer(heatPoints, {
         radius: 16,
         blur: 12,
-        minOpacity: 0.05,
-        max: maxCount,
+        minOpacity: 0.12,
+        max: colorReference,
         maxZoom: map.getZoom(),
         gradient: {
-            0.10: "#ffffb2",
-            0.30: "#fed976",
-            0.50: "#feb24c",
-            0.70: "#fd8d3c",
-            0.85: "#f03b20",
-            1.00: "#bd0026"
+            0.05: "#ffffb2",
+            0.25: "#fec44f",
+            0.45: "#fe9929",
+            0.65: "#ef3b2c",
+            0.82: "#bd0026",
+            1.00: "#67001f"
         }
     }).addTo(map);
 
@@ -728,7 +749,7 @@ map_html = r"""
 """
 
 
-# 将地图嵌入页面并保持所有犯罪数据仅在内存中处理 / Embed the map while keeping crime data processing in memory.
+# 将地图嵌入页面并保持犯罪数据仅在内存中处理 / Embed the map while keeping crime data processing in memory.
 components.html(
     map_html.replace("__CRIME_PAYLOAD__", payload_json),
     height=715,
@@ -744,9 +765,18 @@ st.caption(
 )
 
 
-# 区分热力颜色与附近案件数量 / Distinguish heatmap colors from nearby incident counts.
+# 区分热力颜色和附近案件数量 / Distinguish heatmap colors from nearby incident counts.
 st.caption(
     "Heatmap colors show smoothed relative density. "
     "The hover count is a local neighborhood total, "
     "not the total for an entire colored hotspot."
+)
+
+
+# 说明增强色彩对比不会改变真实计数 / Explain that enhanced color contrast does not change actual counts.
+st.caption(
+    "Color intensity uses the 98th percentile of per-location "
+    "incident counts as a reference to improve contrast. "
+    "High intensities saturate at the darkest color. "
+    "Hover counts remain unchanged."
 )
