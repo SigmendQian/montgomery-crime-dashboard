@@ -14,8 +14,8 @@ from ui import setup_page, load_with_message, source_caption
 setup_page("Crime Map", "🗺️")
 
 st.write(
-    "Explore crime patterns. Zoom out to summarize larger areas "
-    "and zoom in to inspect smaller areas."
+    "Zoom out to merge nearby incident points. "
+    "Zoom in to separate them."
 )
 
 df = load_with_message(load_and_clean_data)
@@ -131,16 +131,11 @@ st.caption(
 
 
 # ============================================================
-# 有效坐标和 ZIP
+# 有效地图记录
 # ============================================================
-columns = ["Incident ID", "Latitude", "Longitude"]
-
-if "Zip Code" in filtered_df.columns:
-    columns.append("Zip Code")
-
 mapped = filtered_df.loc[
     filtered_df["Valid_Coordinates"].fillna(False),
-    columns,
+    ["Incident ID", "Latitude", "Longitude"],
 ].copy()
 
 for column in ["Latitude", "Longitude"]:
@@ -153,22 +148,15 @@ mapped = mapped.dropna(
     subset=["Incident ID", "Latitude", "Longitude"]
 )
 
-# Web Mercator 地图可表示的纬度范围
 mapped = mapped.loc[
     mapped["Latitude"].between(-85.05112878, 85.05112878)
     & mapped["Longitude"].between(-180, 180)
 ].copy()
 
-if "Zip Code" not in mapped.columns:
-    mapped["Zip Code"] = pd.NA
-
-# 兼容 20850、20850.0、20850-1234 等格式
-zip_text = mapped["Zip Code"].astype("string").str.strip()
-
-mapped["ZIP"] = zip_text.str.extract(
-    r"^(\d{5})(?:-\d{4}|\.0+)?$",
-    expand=False,
-).fillna("Unknown")
+# 同一案件在同一坐标只保留一次
+mapped = mapped.drop_duplicates(
+    subset=["Incident ID", "Latitude", "Longitude"]
+)
 
 
 # ============================================================
@@ -179,7 +167,7 @@ mappable_incidents = mapped["Incident ID"].nunique()
 
 map_coverage = (
     mappable_incidents / distinct_incidents * 100
-    if distinct_incidents
+    if distinct_incidents > 0
     else 0
 )
 
@@ -197,45 +185,29 @@ if mapped.empty:
 
 
 # ============================================================
-# 为浏览器准备紧凑的内存数据
-# 同一案件使用相同的整数编号，以便跨坐标、跨网格去重
+# 将案件 ID 编码为整数，用于浏览器内聚合去重
+# 不写入本地文件，不创建快照或磁盘缓存
 # ============================================================
 mapped["Incident_Key"] = pd.factorize(
     mapped["Incident ID"],
     sort=False,
 )[0]
 
-mapped = mapped.drop_duplicates(
-    subset=["Incident_Key", "Latitude", "Longitude", "ZIP"]
-)
-
 locations = (
     mapped.groupby(
         ["Latitude", "Longitude"],
-        as_index=False,
         observed=True,
-    )
-    .agg(
-        Incident_Keys=(
-            "Incident_Key",
-            lambda values: [
-                int(value) for value in pd.unique(values)
-            ],
-        ),
-        ZIPs=(
-            "ZIP",
-            lambda values: sorted(set(values.astype(str))),
-        ),
-    )
+    )["Incident_Key"]
+    .agg(lambda values: [int(v) for v in pd.unique(values)])
+    .reset_index()
 )
 
-# 每个坐标：[纬度、经度、案件编号数组、ZIP数组]
+# 每个坐标：[纬度、经度、不同案件编号数组]
 payload = [
     [
         float(row.Latitude),
         float(row.Longitude),
-        row.Incident_Keys,
-        row.ZIPs,
+        row.Incident_Key,
     ]
     for row in locations.itertuples(index=False)
 ]
@@ -247,16 +219,9 @@ payload_json = json.dumps(
     allow_nan=False,
 ).replace("<", "\\u003c")
 
-st.caption(
-    "Hover over an area to see its distinct incident count and "
-    "ZIP codes recorded within it. Use + / − or the mouse wheel "
-    "to change the aggregation scale."
-)
-
 
 # ============================================================
-# 浏览器地图：热力图 + 动态网格悬停
-# 不使用额外散点，不保存任何犯罪数据文件
+# 动态散点聚合地图
 # ============================================================
 map_html = r"""
 <!DOCTYPE html>
@@ -269,6 +234,10 @@ map_html = r"""
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
 >
+<link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"
+>
 
 <style>
     html, body {
@@ -280,82 +249,73 @@ map_html = r"""
     #map {
         width: 100%;
         height: 700px;
-        border-radius: 10px;
         background: #f3f4f6;
+        border-radius: 10px;
     }
 
-    .map-info {
-        background: rgba(255, 255, 255, 0.96);
-        padding: 10px 12px;
-        border-radius: 7px;
-        box-shadow: 0 1px 8px rgba(0, 0, 0, 0.16);
-        color: #253047;
+    .crime-icon {
+        background: transparent;
+        border: none;
+    }
+
+    .crime-bubble {
+        width: 100%;
+        height: 100%;
+        box-sizing: border-box;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 2px solid rgba(255, 255, 255, 0.90);
+        box-shadow: 0 2px 7px rgba(0, 0, 0, 0.20);
+        font-family: Arial, sans-serif;
+        font-weight: bold;
         font-size: 12px;
-        line-height: 1.6;
-        max-width: 270px;
+        white-space: nowrap;
+        cursor: pointer;
     }
 
-    .area-tooltip {
+    .crime-tooltip {
         background: #202938;
         color: white;
-        border: 0;
+        border: none;
         border-radius: 7px;
-        padding: 12px 14px;
-        font-size: 13px;
-        line-height: 1.65;
-        max-width: 310px;
-        white-space: normal;
+        padding: 10px 13px;
+        font-size: 14px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.20);
     }
 
-    .area-tooltip .count {
-        font-size: 22px;
-        font-weight: bold;
-        color: #ffdb83;
-    }
-
-    .area-tooltip .note {
-        font-size: 11px;
-        color: #cbd5e1;
-        margin-top: 5px;
-    }
-
-    .legend-gradient {
-        height: 12px;
-        width: 190px;
-        border-radius: 4px;
-        margin: 5px 0;
-        background: linear-gradient(
-            to right,
-            #ffffb2,
-            #fed976,
-            #feb24c,
-            #fd8d3c,
-            #f03b20,
-            #bd0026
-        );
-    }
-
-    .legend-labels {
-        display: flex;
-        justify-content: space-between;
+    #status {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        z-index: 1000;
+        background: rgba(255, 255, 255, 0.96);
+        color: #334155;
+        padding: 8px 12px;
+        border-radius: 6px;
+        font-size: 12px;
+        pointer-events: none;
     }
 </style>
 </head>
 
 <body>
 <div id="map"></div>
+<div id="status">Loading map…</div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 
 <script>
 (function () {
     "use strict";
 
-    const raw = __CRIME_PAYLOAD__;
+    const rows = __CRIME_PAYLOAD__;
+    const status = document.getElementById("status");
 
-    if (!window.L || !L.heatLayer) {
-        document.getElementById("map").textContent =
+    if (!window.L || !L.markerClusterGroup) {
+        status.textContent =
             "Map libraries could not load. Check your connection and refresh.";
         return;
     }
@@ -363,16 +323,14 @@ map_html = r"""
     const map = L.map("map", {
         center: [39.13, -77.20],
         zoom: 10,
-        minZoom: 7,
-        maxZoom: 18,
-        zoomSnap: 1,
-        zoomDelta: 1,
-        scrollWheelZoom: true,
-        preferCanvas: true
+        minZoom: 4,
+        maxZoom: 19,
+        scrollWheelZoom: true
     });
 
+    // 使用不带地名标签的底图
     L.tileLayer(
-        "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+        "https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png",
         {
             attribution:
                 '&copy; <a href="https://www.openstreetmap.org/copyright">' +
@@ -383,302 +341,156 @@ map_html = r"""
         }
     ).addTo(map);
 
-    L.control.scale({
-        imperial: false,
-        position: "bottomleft"
-    }).addTo(map);
+    const numberFormat = new Intl.NumberFormat("en-US");
 
-    // 在 zoom=0 时投影一次，以后缩放只需要乘以比例
-    const points = raw.map(function (row) {
-        const projected = map.project([row[0], row[1]], 0);
-        return {
-            lat: row[0],
-            lon: row[1],
-            x: projected.x,
-            y: projected.y,
-            ids: row[2],
-            zips: row[3]
-        };
-    });
-
-    // 热力图仍由真实记录坐标生成，不移动到网格中心
-    const heatPoints = points.map(function (point) {
-        return [point.lat, point.lon, point.ids.length];
-    });
-
-    let maxPointCount = 1;
-    for (const point of points) {
-        maxPointCount = Math.max(maxPointCount, point.ids.length);
+    function countText(count) {
+        return numberFormat.format(count);
     }
 
-    const heat = L.heatLayer(heatPoints, {
-        radius: 25,
-        blur: 18,
-        minOpacity: 0.12,
-        max: maxPointCount,
-        maxZoom: map.getZoom(),
-        gradient: {
-            0.10: "#ffffb2",
-            0.30: "#fed976",
-            0.50: "#feb24c",
-            0.70: "#fd8d3c",
-            0.85: "#f03b20",
-            1.00: "#bd0026"
+    // 圆点只显示数量；颜色沿用黄→橙→红
+    function makeIcon(count) {
+        let size;
+        let background;
+        let foreground;
+
+        if (count < 10) {
+            size = 28;
+            background = "#ffffb2";
+            foreground = "#4a3418";
+        } else if (count < 100) {
+            size = 36;
+            background = "#fed976";
+            foreground = "#4a3418";
+        } else if (count < 1000) {
+            size = 46;
+            background = "#fd8d3c";
+            foreground = "#42220b";
+        } else if (count < 10000) {
+            size = 58;
+            background = "#f03b20";
+            foreground = "#ffffff";
+        } else {
+            size = 72;
+            background = "#bd0026";
+            foreground = "#ffffff";
         }
-    }).addTo(map);
 
-    // 透明网格位于热力图上方，仅用于悬停和边界提示
-    map.createPane("areaPane");
-    map.getPane("areaPane").style.zIndex = 450;
-
-    const areaRenderer = L.canvas({
-        pane: "areaPane",
-        padding: 0.2
-    });
-
-    const areaLayer = L.layerGroup().addTo(map);
-
-    const info = L.control({position: "topright"});
-    let infoElement;
-
-    info.onAdd = function () {
-        infoElement = L.DomUtil.create("div", "map-info");
-        L.DomEvent.disableClickPropagation(infoElement);
-        L.DomEvent.disableScrollPropagation(infoElement);
-        return infoElement;
-    };
-    info.addTo(map);
-
-    const legend = L.control({position: "bottomright"});
-    legend.onAdd = function () {
-        const div = L.DomUtil.create("div", "map-info");
-        div.innerHTML =
-            "<b>Relative crime density</b>" +
-            '<div class="legend-gradient"></div>' +
-            '<div class="legend-labels"><span>Low</span>' +
-            "<span>High</span></div>";
-        L.DomEvent.disableClickPropagation(div);
-        return div;
-    };
-    legend.addTo(map);
-
-    // 每个整数缩放级别上，网格约为 64×64 屏幕像素。
-    // 放大一级：地面边长减半，原网格拆成四个子网格。
-    const CELL_PIXELS = 64;
-
-    let activeZoom = null;
-    let cells = [];
-
-    function makeBounds(gx, gy, zoom) {
-        const northwest = map.unproject(
-            [gx * CELL_PIXELS, gy * CELL_PIXELS],
-            zoom
-        );
-        const southeast = map.unproject(
-            [(gx + 1) * CELL_PIXELS, (gy + 1) * CELL_PIXELS],
-            zoom
-        );
-        return L.latLngBounds(northwest, southeast);
+        return L.divIcon({
+            className: "crime-icon",
+            html:
+                '<div class="crime-bubble" style="' +
+                "background:" + background + ";" +
+                "color:" + foreground + ';">' +
+                countText(count) +
+                "</div>",
+            iconSize: [size, size],
+            iconAnchor: [size / 2, size / 2]
+        });
     }
 
-    function rebuildAggregation(zoom) {
-        const scale = Math.pow(2, zoom);
-        const grouped = new Map();
+    function tooltipText(count) {
+        return "Distinct incidents: <b>" + countText(count) + "</b>";
+    }
 
-        for (const point of points) {
-            const gx = Math.floor(point.x * scale / CELL_PIXELS);
-            const gy = Math.floor(point.y * scale / CELL_PIXELS);
-            const key = gx + ":" + gy;
+    // 必须统计不同案件 ID，不能直接使用聚合点数量
+    function distinctClusterCount(cluster) {
+        const ids = new Set();
 
-            if (!grouped.has(key)) {
-                grouped.set(key, {
-                    gx: gx,
-                    gy: gy,
-                    ids: new Set(),
-                    zips: new Set()
-                });
-            }
-
-            const cell = grouped.get(key);
-
-            // 同一案件在同一网格中出现多次，仍然只计一次
-            for (const id of point.ids) {
-                cell.ids.add(id);
-            }
-
-            for (const zip of point.zips) {
-                cell.zips.add(zip);
+        for (const marker of cluster.getAllChildMarkers()) {
+            for (const id of marker.options.incidentKeys) {
+                ids.add(id);
             }
         }
 
-        cells = [];
+        return ids.size;
+    }
 
-        for (const cell of grouped.values()) {
-            cells.push({
-                bounds: makeBounds(cell.gx, cell.gy, zoom),
-                count: cell.ids.size,
-                zips: Array.from(cell.zips).sort()
+    const clusters = L.markerClusterGroup({
+        maxClusterRadius: 65,
+
+        // 不显示聚合边界、多边形或网格
+        showCoverageOnHover: false,
+
+        // 点击聚合点放大，缩放自动拆分/合并
+        zoomToBoundsOnClick: true,
+        animate: true,
+
+        // 最深缩放时仍保持圆点，不拉出放射连线
+        spiderfyOnMaxZoom: false,
+
+        removeOutsideVisibleBounds: true,
+        chunkedLoading: true,
+        chunkInterval: 100,
+        chunkDelay: 30,
+
+        chunkProgress: function (processed, total) {
+            if (processed >= total) {
+                status.style.display = "none";
+            } else {
+                status.textContent =
+                    "Loading map… " +
+                    Math.round(processed / total * 100) + "%";
+            }
+        },
+
+        iconCreateFunction: function (cluster) {
+            return makeIcon(distinctClusterCount(cluster));
+        }
+    });
+
+    // 聚合点悬停：只显示犯罪数量
+    clusters.on("clustermouseover", function (event) {
+        const cluster = event.layer;
+        const content = tooltipText(distinctClusterCount(cluster));
+
+        if (cluster.getTooltip()) {
+            cluster.setTooltipContent(content);
+        } else {
+            cluster.bindTooltip(content, {
+                direction: "top",
+                className: "crime-tooltip",
+                opacity: 0.98
             });
         }
 
-        activeZoom = zoom;
-    }
+        cluster.openTooltip();
+    });
 
-    function formatDistance(meters) {
-        return meters >= 1000
-            ? (meters / 1000).toFixed(1) + " km"
-            : Math.round(meters) + " m";
-    }
+    clusters.on("clustermouseout", function (event) {
+        event.layer.closeTooltip();
+    });
 
-    function tooltipContent(cell) {
-        const knownZIPs = cell.zips.filter(function (zip) {
-            return /^\d{5}$/.test(zip);
+    // 先创建每个实际坐标的圆点
+    const markers = rows.map(function (row) {
+        const incidentKeys = row[2];
+        const count = incidentKeys.length;
+
+        const marker = L.marker([row[0], row[1]], {
+            icon: makeIcon(count),
+            incidentKeys: incidentKeys,
+            keyboard: true,
+            alt: countText(count) + " distinct incidents"
         });
 
-        const hasUnknown = cell.zips.includes("Unknown");
-        let zipText;
+        marker.bindTooltip(tooltipText(count), {
+            direction: "top",
+            className: "crime-tooltip",
+            opacity: 0.98
+        });
 
-        if (knownZIPs.length === 0) {
-            zipText = "Not available";
-        } else {
-            const displayed = knownZIPs.slice(0, 8);
-            zipText = displayed.join(", ");
+        marker.on("click", function () {
+            marker.openTooltip();
+        });
 
-            if (knownZIPs.length > displayed.length) {
-                zipText += " (+" +
-                    (knownZIPs.length - displayed.length) +
-                    " more)";
-            }
-
-            if (hasUnknown) {
-                zipText += " · some records have no ZIP";
-            }
-        }
-
-        const width = map.distance(
-            cell.bounds.getNorthWest(),
-            cell.bounds.getNorthEast()
-        );
-
-        const height = map.distance(
-            cell.bounds.getNorthWest(),
-            cell.bounds.getSouthWest()
-        );
-
-        return (
-            "<b>Selected grid area</b><br>" +
-            '<span class="count">' +
-            cell.count.toLocaleString("en-US") +
-            "</span> distinct incidents<br>" +
-            "<b>ZIPs in records:</b> " + zipText + "<br>" +
-            "<b>Approx. area size:</b> " +
-            formatDistance(width) + " × " +
-            formatDistance(height) +
-            '<div class="note">' +
-            "Count applies to this grid, not entire ZIP areas." +
-            "</div>"
-        );
-    }
-
-    function drawVisibleCells() {
-        areaLayer.clearLayers();
-
-        const visibleBounds = map.getBounds().pad(0.15);
-
-        for (const cell of cells) {
-            if (!visibleBounds.intersects(cell.bounds)) {
-                continue;
-            }
-
-            const rectangle = L.rectangle(cell.bounds, {
-                pane: "areaPane",
-                renderer: areaRenderer,
-                color: "#475569",
-                weight: 0.6,
-                opacity: 0.14,
-                fill: true,
-                fillColor: "#ffffff",
-                fillOpacity: 0,
-                interactive: true
-            });
-
-            rectangle.bindTooltip(
-                function () {
-                    return tooltipContent(cell);
-                },
-                {
-                    sticky: true,
-                    direction: "auto",
-                    className: "area-tooltip",
-                    opacity: 0.98
-                }
-            );
-
-            rectangle.on("mouseover", function () {
-                rectangle.setStyle({
-                    color: "#334155",
-                    weight: 2,
-                    opacity: 0.9
-                });
-            });
-
-            rectangle.on("mouseout", function () {
-                rectangle.setStyle({
-                    color: "#475569",
-                    weight: 0.6,
-                    opacity: 0.14
-                });
-            });
-
-            // 手机或触控设备可点击查看
-            rectangle.on("click", function (event) {
-                rectangle.openTooltip(event.latlng);
-            });
-
-            rectangle.addTo(areaLayer);
-        }
-
-        const center = map.getCenter();
-        const centerPixel = map.project(center, activeZoom);
-        const cellWidth = map.distance(
-            center,
-            map.unproject(
-                [centerPixel.x + CELL_PIXELS, centerPixel.y],
-                activeZoom
-            )
-        );
-
-        infoElement.innerHTML =
-            "<b>Dynamic area counts</b><br>" +
-            "Zoom level: " + activeZoom + "<br>" +
-            "Grid width near map center: ≈ " +
-            formatDistance(cellWidth) + "<br>" +
-            "Zoom in: smaller areas<br>" +
-            "Zoom out: larger areas";
-    }
-
-    function refresh() {
-        const zoom = Math.round(map.getZoom());
-
-        if (zoom !== activeZoom) {
-            rebuildAggregation(zoom);
-
-            // 避免缩小时因默认缩放衰减导致热力图过淡
-            heat.setOptions({maxZoom: zoom});
-        }
-
-        // 平移只更新可见网格，不改变统计范围和计数
-        drawVisibleCells();
-    }
-
-    map.on("zoomstart", function () {
-        // 缩放动画期间移除旧网格，避免提示沿用旧范围
-        areaLayer.clearLayers();
+        return marker;
     });
 
-    map.on("moveend", refresh);
+    map.addLayer(clusters);
+    clusters.addLayers(markers);
 
-    refresh();
+    map.on("zoomstart", function () {
+        map.closeTooltip();
+    });
 
     // 适应 Streamlit 页面宽度
     if (window.ResizeObserver) {
@@ -699,25 +511,14 @@ components.html(
     scrolling=False,
 )
 
-
-# ============================================================
-# 统计口径说明
-# ============================================================
 st.caption(
-    "Grid areas automatically split when zooming in and merge "
-    "when zooming out. Counts use distinct Incident IDs within "
-    "each complete grid area under the selected filters."
+    "Numbers show distinct incidents within each point or cluster. "
+    "Nearby points merge when zooming out and separate when zooming in."
 )
 
 st.caption(
-    "ZIP labels come from incident records within the grid. "
-    "They are not ZIP boundaries or whole-ZIP totals. "
-    "Panning does not change a grid's count."
-)
-
-st.caption(
-    "Heatmap colors show smoothed relative density, while hover "
-    "counts describe the outlined grid. An incident recorded "
-    "in multiple grids may appear once in each, so grid counts "
+    "An incident recorded at multiple locations is counted once "
+    "within a cluster. If those locations separate into different "
+    "clusters, the incident may appear in each; displayed counts "
     "should not be summed as a countywide distinct total."
 )
