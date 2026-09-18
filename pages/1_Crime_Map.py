@@ -169,7 +169,7 @@ col1, col2, col3 = st.columns(3)
 
 col1.metric("Distinct Incidents", f"{distinct_incidents:,}")
 col2.metric("Mappable Incidents", f"{mappable_incidents:,}")
-col3.metric("Map Coverage", f"{mapmap_coverage:.1f}%")
+col3.metric("Map Coverage", f"{map_coverage:.1f}%")
 
 st.divider()
 
