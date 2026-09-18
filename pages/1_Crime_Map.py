@@ -1,27 +1,31 @@
-import pydeck as pdk
+import pandas as pd
+import plotly.express as px
 import streamlit as st
 
-import pandas as pd
 from data_service import load_and_clean_data
 from ui import setup_page, load_with_message, source_caption
 
 
 # 页面与在线数据 / Page and online data
 setup_page("Crime Map", "🗺️")
-st.write("Explore the spatial distribution of crime incidents across Montgomery County.")
+
+st.write(
+    "Explore the spatial distribution of crime incidents "
+    "across Montgomery County."
+)
+
 df = load_with_message(load_and_clean_data)
 source_caption(df)
 
+if df.empty:
+    st.warning("No crime records are available.")
+    st.stop()
+
+
 # 侧边栏筛选 / Sidebar filters
-st.sidebar.header(
-    "Map Filters"
-)
+st.sidebar.header("Map Filters")
 
-
-# Crime Name1 筛选 / Crime Name1 filter
-crime_name1_options = [
-    "All"
-] + sorted(
+crime_name1_options = ["All"] + sorted(
     df["Crime Name1"]
     .dropna()
     .astype(str)
@@ -29,32 +33,19 @@ crime_name1_options = [
     .tolist()
 )
 
-
-selected_crime_name1 = (
-    st.sidebar.selectbox(
-        "Crime Name1",
-        crime_name1_options
-    )
+selected_crime_name1 = st.sidebar.selectbox(
+    "Crime Name1",
+    crime_name1_options,
 )
 
-
-# Crime Name2 联动筛选 / Linked Crime Name2 filter
+# Crime Name2 联动筛选
 if selected_crime_name1 == "All":
-
-    crime_name2_options = [
-        "All"
-    ]
-
+    crime_name2_options = ["All"]
 else:
-
-    crime_name2_options = [
-        "All"
-    ] + sorted(
+    crime_name2_options = ["All"] + sorted(
         df.loc[
-            df["Crime Name1"]
-            .astype(str)
-            == selected_crime_name1,
-            "Crime Name2"
+            df["Crime Name1"].astype(str).eq(selected_crime_name1),
+            "Crime Name2",
         ]
         .dropna()
         .astype(str)
@@ -62,199 +53,92 @@ else:
         .tolist()
     )
 
+selected_crime_name2 = st.sidebar.selectbox(
+    "Crime Name2",
+    crime_name2_options,
+)
 
-selected_crime_name2 = (
-    st.sidebar.selectbox(
-        "Crime Name2",
-        crime_name2_options
-    )
+# 日期范围
+valid_dates = df["Date"].dropna()
+
+if valid_dates.empty:
+    st.warning("No valid incident dates are available.")
+    st.stop()
+
+min_date = valid_dates.min().date()
+max_date = valid_dates.max().date()
+
+selected_date_range = st.sidebar.date_input(
+    "Date Range",
+    value=(min_date, max_date),
+    min_value=min_date,
+    max_value=max_date,
+)
+
+# 小时范围，包含结束小时
+selected_hour_range = st.sidebar.slider(
+    "Hour of Day",
+    min_value=0,
+    max_value=23,
+    value=(0, 23),
+    step=1,
 )
 
 
-# 日期范围 / Date range
-min_date = (
-    df["Date"]
-    .min()
-    .date()
-)
-
-max_date = (
-    df["Date"]
-    .max()
-    .date()
-)
-
-
-selected_date_range = (
-    st.sidebar.date_input(
-        "Date Range",
-        value=(
-            min_date,
-            max_date
-        ),
-        min_value=min_date,
-        max_value=max_date
-    )
-)
-
-
-# 小时范围 / Hour range
-selected_hour_range = (
-    st.sidebar.slider(
-        "Hour of Day",
-        min_value=0,
-        max_value=23,
-        value=(
-            0,
-            23
-        ),
-        step=1
-    )
-)
-
-
-# 建立筛选数据 / Build filtered dataset
+# 应用筛选 / Apply filters
 filtered_df = df
 
-
-# 应用 Crime Name1 / Apply Crime Name1
 if selected_crime_name1 != "All":
-
-    filtered_df = filtered_df[
+    filtered_df = filtered_df.loc[
         filtered_df["Crime Name1"]
         .astype(str)
-        == selected_crime_name1
+        .eq(selected_crime_name1)
     ]
 
-
-# 应用 Crime Name2 / Apply Crime Name2
 if selected_crime_name2 != "All":
-
-    filtered_df = filtered_df[
+    filtered_df = filtered_df.loc[
         filtered_df["Crime Name2"]
         .astype(str)
-        == selected_crime_name2
+        .eq(selected_crime_name2)
     ]
 
-
-# 应用日期范围 / Apply date range
-if len(selected_date_range) == 2:
-
-    start_date = (
-        selected_date_range[0]
-    )
-
-    end_date = (
-        selected_date_range[1]
-    )
-
-    filtered_df = filtered_df[
-        (
-            filtered_df["Date"] >= pd.Timestamp(start_date)
-        )
-        &
-        (
-            filtered_df["Date"] <= pd.Timestamp(end_date)
-        )
-    ]
-
-
-else:
+if (
+    not isinstance(selected_date_range, (tuple, list))
+    or len(selected_date_range) != 2
+):
     st.info("Select both the start and end dates.")
     st.stop()
 
-# 应用小时范围 / Apply hour range
-start_hour = (
-    selected_hour_range[0]
-)
+start_date, end_date = selected_date_range
 
-end_hour = (
-    selected_hour_range[1]
-)
+# 使用结束日期的次日作为右侧边界，涵盖结束日全天
+start_timestamp = pd.Timestamp(start_date)
+end_timestamp = pd.Timestamp(end_date) + pd.Timedelta(days=1)
 
-
-filtered_df = filtered_df[
-    filtered_df["Hour"].between(
-        start_hour,
-        end_hour
-    )
+filtered_df = filtered_df.loc[
+    filtered_df["Date"].ge(start_timestamp)
+    & filtered_df["Date"].lt(end_timestamp)
 ]
 
+start_hour, end_hour = selected_hour_range
 
-st.caption(f"Selected hours: {start_hour:02d}:00–{end_hour:02d}:59 (inclusive).")
+filtered_df = filtered_df.loc[
+    filtered_df["Hour"].between(start_hour, end_hour)
+]
 
-# 统计指标 / Summary metrics
-distinct_incidents = (
-    filtered_df[
-        "Incident ID"
-    ]
-    .nunique()
+st.caption(
+    f"Selected hours: "
+    f"{start_hour:02d}:00–{end_hour:02d}:59 (inclusive)."
 )
 
 
-mappable_incidents = (
-    filtered_df.loc[
-        filtered_df[
-            "Valid_Coordinates"
-        ],
-        "Incident ID"
-    ]
-    .nunique()
-)
-
-
-if distinct_incidents > 0:
-
-    map_coverage = (
-        mappable_incidents
-        / distinct_incidents
-        * 100
-    )
-
-else:
-
-    map_coverage = 0
-
-
-col1, col2, col3 = (
-    st.columns(3)
-)
-
-
-with col1:
-
-    st.metric(
-        "Distinct Incidents",
-        f"{distinct_incidents:,}"
-    )
-
-
-with col2:
-
-    st.metric(
-        "Mappable Incidents",
-        f"{mappable_incidents:,}"
-    )
-
-
-with col3:
-
-    st.metric(
-        "Map Coverage",
-        f"{map_coverage:.1f}%"
-    )
-
-
-st.divider()
-
-
-# 保留有效地图坐标 / Keep valid map coordinates
+# 准备地图数据 / Prepare map data
+# 只在内存中处理远程数据，不读取或写入本地犯罪数据
 mappable_df = filtered_df.loc[
     filtered_df["Valid_Coordinates"].fillna(False),
     ["Incident ID", "Latitude", "Longitude"],
 ].copy()
 
-# 确保经纬度为数值 / Ensure numeric coordinates
 for column in ["Latitude", "Longitude"]:
     mappable_df[column] = pd.to_numeric(
         mappable_df[column],
@@ -265,17 +149,59 @@ mappable_df = mappable_df.dropna(
     subset=["Incident ID", "Latitude", "Longitude"]
 )
 
-# 避免同一案件在同一坐标重复计数
+mappable_df = mappable_df.loc[
+    mappable_df["Latitude"].between(-90, 90)
+    & mappable_df["Longitude"].between(-180, 180)
+]
+
+# 同一案件在同一坐标只保留一次
 map_df = mappable_df.drop_duplicates(
     subset=["Incident ID", "Latitude", "Longitude"]
 )
 
+
+# 统计指标 / Summary metrics
+distinct_incidents = filtered_df["Incident ID"].nunique()
+mappable_incidents = map_df["Incident ID"].nunique()
+
+map_coverage = (
+    mappable_incidents / distinct_incidents * 100
+    if distinct_incidents > 0
+    else 0
+)
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.metric(
+        "Distinct Incidents",
+        f"{distinct_incidents:,}",
+    )
+
+with col2:
+    st.metric(
+        "Mappable Incidents",
+        f"{mappable_incidents:,}",
+    )
+
+with col3:
+    st.metric(
+        "Map Coverage",
+        f"{map_coverage:.1f}%",
+    )
+
+st.divider()
+
 if map_df.empty:
-    st.warning("No mappable incidents match the selected filters.")
+    st.warning(
+        "No mappable incidents match the selected filters."
+    )
     st.stop()
 
-# 按精确经纬度汇总不同案件数，不对坐标四舍五入
-point_df = (
+
+# 按精确坐标汇总案件数量 / Count incidents per coordinate
+# 不对经纬度四舍五入，不合并附近的不同位置
+location_counts = (
     map_df.groupby(
         ["Latitude", "Longitude"],
         as_index=False,
@@ -285,130 +211,99 @@ point_df = (
     .rename(columns={"Incident ID": "Incident_Count"})
 )
 
-# 百分位：案件数 <= 当前点案件数的坐标点占比
-# method="max" 使案件数相同的点获得相同的累计百分位
-point_df["Count_Percentile"] = (
-    point_df["Incident_Count"]
-    .rank(method="max", pct=True)
-    .mul(100)
+location_counts["Incident_Count"] = (
+    location_counts["Incident_Count"].astype(int)
 )
 
-# 提前格式化悬停文本
-point_df["Count_Label"] = point_df["Incident_Count"].map(
-    lambda value: f"{int(value):,}"
-)
-point_df["Latitude_Label"] = point_df["Latitude"].map(
-    lambda value: f"{value:.6f}"
-)
-point_df["Longitude_Label"] = point_df["Longitude"].map(
-    lambda value: f"{value:.6f}"
-)
-point_df["Percentile_Label"] = point_df["Count_Percentile"].map(
-    lambda value: f"{value:.1f}%"
-)
 
-# 小案件数先画，大案件数后画，方便选择重叠区域中的高计数点
-point_df = point_df.sort_values(
-    ["Incident_Count", "Latitude", "Longitude"]
-).reset_index(drop=True)
+# 热力图设置 / Heatmap settings
+heatmap_colors = [
+    "rgb(255,255,178)",
+    "rgb(254,217,118)",
+    "rgb(254,178,76)",
+    "rgb(253,141,60)",
+    "rgb(240,59,32)",
+    "rgb(189,0,38)",
+]
 
-show_hover_points = st.checkbox(
-    "Show hover points",
-    value=True,
-    help="Hover over a point to inspect its incident count and percentile.",
-)
-
-# 地图视角 / Map view
-view_state = pdk.ViewState(
-    latitude=39.13,
-    longitude=-77.20,
-    zoom=9.4,
-    pitch=0,
-)
-
-# 热力图：按每个坐标的案件数加权
-heatmap_layer = pdk.Layer(
-    "HeatmapLayer",
-    id="crime-heatmap",
-    data=point_df[
-        ["Latitude", "Longitude", "Incident_Count"]
-    ],
-    get_position=["Longitude", "Latitude"],
-    get_weight="Incident_Count",
-    aggregation="SUM",
-    radius_pixels=35,
-    intensity=1,
-    threshold=0.03,
-    pickable=False,
-    color_range=[
-        [255, 255, 178, 255],
-        [254, 217, 118, 255],
-        [254, 178, 76, 255],
-        [253, 141, 60, 255],
-        [240, 59, 32, 255],
-        [189, 0, 38, 255],
-    ],
-)
-
-layers = [heatmap_layer]
-
-if show_hover_points:
-    point_layer = pdk.Layer(
-        "ScatterplotLayer",
-        id="crime-hover-points-v2",
-        data=point_df,
-        get_position=["Longitude", "Latitude"],
-
-        # 默认半径单位为米，并强制限制屏幕上的像素大小
-        get_radius=15,
-        radius_scale=1,
-        radius_min_pixels=2,
-        radius_max_pixels=3,
-
-        # 淡色小点，不绘制边框，减少遮挡
-        filled=True,
-        stroked=False,
-        get_fill_color=[110, 35, 35, 35],
-
-        # 保留悬停拾取
-        pickable=True,
-        auto_highlight=True,
-        highlight_color=[255, 255, 255, 220],
-    )
-
-    layers.append(point_layer)
-
-# 悬停信息 / Tooltip
-tooltip = {
-    "html": (
-        "<b>Recorded location</b><br/>"
-        "<b>Distinct incidents:</b> {Count_Label}<br/>"
-        "<b>Latitude:</b> {Latitude_Label}<br/>"
-        "<b>Longitude:</b> {Longitude_Label}<br/>"
-        "<b>Incident-count percentile:</b> {Percentile_Label}"
-    ),
-    "style": {
-        "backgroundColor": "#202938",
-        "color": "#ffffff",
-        "fontSize": "14px",
-        "padding": "12px",
-        "borderRadius": "8px",
-    },
+map_center = {
+    "lat": 39.13,
+    "lon": -77.20,
 }
 
-deck = pdk.Deck(
-    layers=layers,
-    initial_view_state=view_state,
-    map_style="light",
-    tooltip=tooltip,
+chart_options = {
+    "data_frame": location_counts,
+    "lat": "Latitude",
+    "lon": "Longitude",
+
+    # 每个位置按不同案件数量加权
+    "z": "Incident_Count",
+
+    # 将案件数量传给原生悬停提示
+    "custom_data": ["Incident_Count"],
+
+    "radius": 25,
+    "center": map_center,
+    "zoom": 9.4,
+    "height": 700,
+    "opacity": 0.85,
+    "color_continuous_scale": heatmap_colors,
+}
+
+# 与参考项目一致：优先使用 density_map
+# 同时兼容只有 density_mapbox 的旧版 Plotly
+if hasattr(px, "density_map"):
+    fig = px.density_map(
+        **chart_options,
+        map_style="carto-positron",
+    )
+else:
+    fig = px.density_mapbox(
+        **chart_options,
+        mapbox_style="carto-positron",
+    )
+
+# 仅使用热力图本身的悬停，无额外散点图层
+fig.update_traces(
+    hovertemplate=(
+        "<b>Recorded location</b><br>"
+        "Latitude: %{lat:.6f}<br>"
+        "Longitude: %{lon:.6f}<br>"
+        "<b>Distinct incidents: %{customdata[0]:,.0f}</b>"
+        "<extra></extra>"
+    )
 )
 
-st.pydeck_chart(
-    deck,
-    use_container_width=True,
-    height=700,
-    key="crime_map_hover_v2",
+fig.update_layout(
+    margin=dict(l=0, r=0, t=0, b=0),
+    paper_bgcolor="rgba(0,0,0,0)",
+    font=dict(
+        family="Arial, sans-serif",
+        size=13,
+    ),
+    hoverlabel=dict(
+        bgcolor="#202938",
+        bordercolor="#202938",
+        font=dict(
+            color="white",
+            size=14,
+        ),
+    ),
+
+    # 使用下方相对密度图例，避免把颜色误读为精确案件数
+    coloraxis_showscale=False,
 )
+
+st.plotly_chart(
+    fig,
+    use_container_width=True,
+    key="crime_density_map_native_hover",
+    config={
+        "scrollZoom": True,
+        "displaylogo": False,
+    },
+)
+
 
 # 热力图图例 / Heatmap legend
 st.markdown(
@@ -431,25 +326,23 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
+# 地图说明 / Map notes
 st.caption(
-    "Hover over a point to view distinct incidents at that exact "
-    "recorded coordinate. Zoom in to separate nearby points. "
-    "Counts and percentiles update with the selected filters."
+    "Hover near a recorded location on the heatmap to view its "
+    "latitude, longitude, and distinct incident count. "
+    "Zoom in to distinguish nearby locations."
 )
 
 st.caption(
-    "The incident-count percentile is the percentage of mapped "
-    "locations with an incident count less than or equal to this "
-    "location's count. Tied counts receive the same percentile. "
-    "Only locations with matching incidents are included; "
-    "this is not a measure of personal victimization risk."
+    "Tooltip counts refer to the exact recorded coordinate under "
+    "the selected filters, not the entire surrounding heatmap area. "
+    "Multiple offense rows for the same incident at the same "
+    "location are counted once."
 )
 
 st.caption(
-    "Heatmap colors show smoothed relative density across nearby "
-    "locations, while tooltips describe individual recorded coordinates. "
-    "Multiple offense rows from the same incident at the same location "
-    "are counted once. An incident recorded at multiple locations can "
-    "appear at each location, so point counts may sum to more than "
-    "the countywide distinct incident count."
+    "Heatmap colors show smoothed relative incident density, "
+    "not personal victimization probability. An incident recorded "
+    "at multiple locations can contribute to each location."
 )
