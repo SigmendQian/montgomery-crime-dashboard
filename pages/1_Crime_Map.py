@@ -353,24 +353,29 @@ heatmap_layer = pdk.Layer(
 layers = [heatmap_layer]
 
 if show_hover_points:
-    # 可悬停小圆点 / Pickable point overlay
     point_layer = pdk.Layer(
         "ScatterplotLayer",
-        id="crime-hover-points",
+        id="crime-hover-points-v2",
         data=point_df,
         get_position=["Longitude", "Latitude"],
-        radius_units="pixels",
-        get_radius=4,
+
+        # 默认半径单位为米，并强制限制屏幕上的像素大小
+        get_radius=15,
+        radius_scale=1,
+        radius_min_pixels=2,
+        radius_max_pixels=3,
+
+        # 淡色小点，不绘制边框，减少遮挡
         filled=True,
-        stroked=True,
-        get_fill_color=[120, 30, 30, 65],
-        get_line_color=[100, 30, 30, 130],
-        line_width_units="pixels",
-        get_line_width=0.5,
+        stroked=False,
+        get_fill_color=[110, 35, 35, 35],
+
+        # 保留悬停拾取
         pickable=True,
         auto_highlight=True,
         highlight_color=[255, 255, 255, 220],
     )
+
     layers.append(point_layer)
 
 # 悬停信息 / Tooltip
@@ -402,6 +407,7 @@ st.pydeck_chart(
     deck,
     use_container_width=True,
     height=700,
+    key="crime_map_hover_v2",
 )
 
 # 热力图图例 / Heatmap legend
