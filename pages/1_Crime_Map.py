@@ -8,14 +8,12 @@ from data_service import load_and_clean_data
 from ui import setup_page, load_with_message, source_caption
 
 
-# ============================================================
-# 页面与在线数据
-# ============================================================
+# 设置页面并加载在线数据 / Configure the page and load online data.
 setup_page("Crime Map", "🗺️")
 
 st.write(
-    "Zoom out to merge nearby incident points. "
-    "Zoom in to separate them."
+    "Explore crime density. Hover over the map "
+    "to see nearby incident counts."
 )
 
 df = load_with_message(load_and_clean_data)
@@ -26,9 +24,7 @@ if df.empty:
     st.stop()
 
 
-# ============================================================
-# 侧边栏筛选
-# ============================================================
+# 创建犯罪大类筛选器 / Create the main crime category filter.
 st.sidebar.header("Map Filters")
 
 crime_name1_options = ["All"] + sorted(
@@ -44,6 +40,8 @@ selected_crime_name1 = st.sidebar.selectbox(
     crime_name1_options,
 )
 
+
+# 根据犯罪大类更新子类选项 / Update subcategory options from the main category.
 if selected_crime_name1 == "All":
     crime_name2_options = ["All"]
 else:
@@ -63,6 +61,8 @@ selected_crime_name2 = st.sidebar.selectbox(
     crime_name2_options,
 )
 
+
+# 获取有效日期范围 / Get the valid date range.
 valid_dates = df["Date"].dropna()
 
 if valid_dates.empty:
@@ -79,6 +79,8 @@ selected_date_range = st.sidebar.date_input(
     max_value=max_date,
 )
 
+
+# 创建包含结束小时的时间筛选器 / Create an hour filter that includes the ending hour.
 start_hour, end_hour = st.sidebar.slider(
     "Hour of Day",
     min_value=0,
@@ -88,9 +90,7 @@ start_hour, end_hour = st.sidebar.slider(
 )
 
 
-# ============================================================
-# 应用筛选
-# ============================================================
+# 应用犯罪类别筛选 / Apply the crime category filters.
 filtered_df = df
 
 if selected_crime_name1 != "All":
@@ -107,6 +107,8 @@ if selected_crime_name2 != "All":
         .eq(selected_crime_name2)
     ]
 
+
+# 检查用户是否选择了完整日期范围 / Check that a complete date range is selected.
 if (
     not isinstance(selected_date_range, (tuple, list))
     or len(selected_date_range) != 2
@@ -116,6 +118,8 @@ if (
 
 start_date, end_date = selected_date_range
 
+
+# 应用日期和小时筛选并包含结束日全天 / Apply date and hour filters including the full ending day.
 filtered_df = filtered_df.loc[
     filtered_df["Date"].ge(pd.Timestamp(start_date))
     & filtered_df["Date"].lt(
@@ -130,9 +134,7 @@ st.caption(
 )
 
 
-# ============================================================
-# 有效地图记录
-# ============================================================
+# 保留具有有效地图坐标的记录 / Keep records with valid map coordinates.
 mapped = filtered_df.loc[
     filtered_df["Valid_Coordinates"].fillna(False),
     ["Incident ID", "Latitude", "Longitude"],
@@ -153,15 +155,14 @@ mapped = mapped.loc[
     & mapped["Longitude"].between(-180, 180)
 ].copy()
 
-# 同一案件在同一坐标只保留一次
+
+# 同一案件在同一坐标只保留一次 / Keep each incident only once at each coordinate.
 mapped = mapped.drop_duplicates(
     subset=["Incident ID", "Latitude", "Longitude"]
 )
 
 
-# ============================================================
-# 汇总指标
-# ============================================================
+# 计算事件总数与地图覆盖率 / Calculate distinct incidents and map coverage.
 distinct_incidents = filtered_df["Incident ID"].nunique()
 mappable_incidents = mapped["Incident ID"].nunique()
 
@@ -173,36 +174,53 @@ map_coverage = (
 
 col1, col2, col3 = st.columns(3)
 
-col1.metric("Distinct Incidents", f"{distinct_incidents:,}")
-col2.metric("Mappable Incidents", f"{mappable_incidents:,}")
-col3.metric("Map Coverage", f"{map_coverage:.1f}%")
+col1.metric(
+    "Distinct Incidents",
+    f"{distinct_incidents:,}",
+)
+
+col2.metric(
+    "Mappable Incidents",
+    f"{mappable_incidents:,}",
+)
+
+col3.metric(
+    "Map Coverage",
+    f"{map_coverage:.1f}%",
+)
 
 st.divider()
 
 if mapped.empty:
-    st.warning("No mappable incidents match the selected filters.")
+    st.warning(
+        "No mappable incidents match the selected filters."
+    )
     st.stop()
 
 
-# ============================================================
-# 将案件 ID 编码为整数，用于浏览器内聚合去重
-# 不写入本地文件，不创建快照或磁盘缓存
-# ============================================================
+# 将案件编号转换为整数以支持浏览器内去重 / Encode incident IDs as integers for browser-side deduplication.
 mapped["Incident_Key"] = pd.factorize(
     mapped["Incident ID"],
     sort=False,
 )[0]
 
+
+# 按精确坐标汇总不同案件编号 / Group distinct incident identifiers by exact coordinates.
 locations = (
     mapped.groupby(
         ["Latitude", "Longitude"],
         observed=True,
     )["Incident_Key"]
-    .agg(lambda values: [int(v) for v in pd.unique(values)])
+    .agg(
+        lambda values: [
+            int(value) for value in pd.unique(values)
+        ]
+    )
     .reset_index()
 )
 
-# 每个坐标：[纬度、经度、不同案件编号数组]
+
+# 在内存中构造地图数据而不创建本地快照 / Build map data in memory without creating local snapshots.
 payload = [
     [
         float(row.Latitude),
@@ -220,9 +238,7 @@ payload_json = json.dumps(
 ).replace("<", "\\u003c")
 
 
-# ============================================================
-# 动态散点聚合地图
-# ============================================================
+# 创建可缩放的热力图并在后台计算悬停案件数 / Create a zoomable heatmap with background hover counting.
 map_html = r"""
 <!DOCTYPE html>
 <html>
@@ -233,10 +249,6 @@ map_html = r"""
 <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
->
-<link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"
 >
 
 <style>
@@ -253,26 +265,8 @@ map_html = r"""
         border-radius: 10px;
     }
 
-    .crime-icon {
-        background: transparent;
-        border: none;
-    }
-
-    .crime-bubble {
-        width: 100%;
-        height: 100%;
-        box-sizing: border-box;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border: 2px solid rgba(255, 255, 255, 0.90);
-        box-shadow: 0 2px 7px rgba(0, 0, 0, 0.20);
-        font-family: Arial, sans-serif;
-        font-weight: bold;
-        font-size: 12px;
-        white-space: nowrap;
-        cursor: pointer;
+    .leaflet-heatmap-layer {
+        pointer-events: none !important;
     }
 
     .crime-tooltip {
@@ -280,17 +274,48 @@ map_html = r"""
         color: white;
         border: none;
         border-radius: 7px;
-        padding: 10px 13px;
+        padding: 10px 14px;
         font-size: 14px;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.20);
+        pointer-events: none !important;
     }
 
-    #status {
+    .map-legend {
+        background: rgba(255,255,255,0.95);
+        padding: 9px 12px;
+        border-radius: 7px;
+        color: #334155;
+        font-size: 12px;
+        box-shadow: 0 1px 6px rgba(0,0,0,0.15);
+    }
+
+    .legend-gradient {
+        width: 180px;
+        height: 11px;
+        margin: 6px 0;
+        border-radius: 4px;
+        background: linear-gradient(
+            to right,
+            #ffffb2,
+            #fed976,
+            #feb24c,
+            #fd8d3c,
+            #f03b20,
+            #bd0026
+        );
+    }
+
+    .legend-labels {
+        display: flex;
+        justify-content: space-between;
+    }
+
+    #map-message {
         position: absolute;
-        top: 12px;
-        right: 12px;
+        top: 10px;
+        right: 10px;
         z-index: 1000;
-        background: rgba(255, 255, 255, 0.96);
+        max-width: 260px;
+        background: rgba(255,255,255,0.96);
         color: #334155;
         padding: 8px 12px;
         border-radius: 6px;
@@ -302,20 +327,21 @@ map_html = r"""
 
 <body>
 <div id="map"></div>
-<div id="status">Loading map…</div>
+<div id="map-message">Preparing hover counts…</div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
 
 <script>
 (function () {
     "use strict";
 
     const rows = __CRIME_PAYLOAD__;
-    const status = document.getElementById("status");
+    const mapElement = document.getElementById("map");
+    const messageElement = document.getElementById("map-message");
 
-    if (!window.L || !L.markerClusterGroup) {
-        status.textContent =
+    if (!window.L || !L.heatLayer) {
+        messageElement.textContent =
             "Map libraries could not load. Check your connection and refresh.";
         return;
     }
@@ -323,202 +349,404 @@ map_html = r"""
     const map = L.map("map", {
         center: [39.13, -77.20],
         zoom: 10,
-        minZoom: 4,
+        minZoom: 7,
         maxZoom: 19,
-        scrollWheelZoom: true
+        zoomControl: true,
+        scrollWheelZoom: true,
+        doubleClickZoom: true,
+        touchZoom: true,
+        dragging: true,
+        zoomSnap: 1,
+        zoomDelta: 1,
+        zoomAnimation: false,
+        fadeAnimation: false
     });
 
-    // 使用不带地名标签的底图
     L.tileLayer(
-        "https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png",
+        "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
         {
+            maxZoom: 19,
             attribution:
                 '&copy; <a href="https://www.openstreetmap.org/copyright">' +
-                'OpenStreetMap</a> contributors &copy; ' +
-                '<a href="https://carto.com/attributions">CARTO</a>',
-            subdomains: "abcd",
-            maxZoom: 20
+                'OpenStreetMap</a> contributors'
         }
     ).addTo(map);
 
-    const numberFormat = new Intl.NumberFormat("en-US");
+    L.control.scale({
+        imperial: false,
+        position: "bottomleft"
+    }).addTo(map);
 
-    function countText(count) {
-        return numberFormat.format(count);
-    }
+    const heatPoints = [];
+    const queryPoints = [];
+    let maxCount = 1;
 
-    // 圆点只显示数量；颜色沿用黄→橙→红
-    function makeIcon(count) {
-        let size;
-        let background;
-        let foreground;
+    for (const row of rows) {
+        const count = row[2].length;
 
-        if (count < 10) {
-            size = 28;
-            background = "#ffffb2";
-            foreground = "#4a3418";
-        } else if (count < 100) {
-            size = 36;
-            background = "#fed976";
-            foreground = "#4a3418";
-        } else if (count < 1000) {
-            size = 46;
-            background = "#fd8d3c";
-            foreground = "#42220b";
-        } else if (count < 10000) {
-            size = 58;
-            background = "#f03b20";
-            foreground = "#ffffff";
-        } else {
-            size = 72;
-            background = "#bd0026";
-            foreground = "#ffffff";
-        }
+        heatPoints.push([row[0], row[1], count]);
+        maxCount = Math.max(maxCount, count);
 
-        return L.divIcon({
-            className: "crime-icon",
-            html:
-                '<div class="crime-bubble" style="' +
-                "background:" + background + ";" +
-                "color:" + foreground + ';">' +
-                countText(count) +
-                "</div>",
-            iconSize: [size, size],
-            iconAnchor: [size / 2, size / 2]
+        const point = map.project([row[0], row[1]], 0);
+
+        queryPoints.push({
+            x: point.x,
+            y: point.y,
+            ids: row[2]
         });
     }
 
-    function tooltipText(count) {
-        return "Distinct incidents: <b>" + countText(count) + "</b>";
-    }
-
-    // 必须统计不同案件 ID，不能直接使用聚合点数量
-    function distinctClusterCount(cluster) {
-        const ids = new Set();
-
-        for (const marker of cluster.getAllChildMarkers()) {
-            for (const id of marker.options.incidentKeys) {
-                ids.add(id);
-            }
+    const heat = L.heatLayer(heatPoints, {
+        radius: 16,
+        blur: 12,
+        minOpacity: 0.05,
+        max: maxCount,
+        maxZoom: map.getZoom(),
+        gradient: {
+            0.10: "#ffffb2",
+            0.30: "#fed976",
+            0.50: "#feb24c",
+            0.70: "#fd8d3c",
+            0.85: "#f03b20",
+            1.00: "#bd0026"
         }
+    }).addTo(map);
 
-        return ids.size;
-    }
-
-    const clusters = L.markerClusterGroup({
-        maxClusterRadius: 65,
-
-        // 不显示聚合边界、多边形或网格
-        showCoverageOnHover: false,
-
-        // 点击聚合点放大，缩放自动拆分/合并
-        zoomToBoundsOnClick: true,
-        animate: true,
-
-        // 最深缩放时仍保持圆点，不拉出放射连线
-        spiderfyOnMaxZoom: false,
-
-        removeOutsideVisibleBounds: true,
-        chunkedLoading: true,
-        chunkInterval: 100,
-        chunkDelay: 30,
-
-        chunkProgress: function (processed, total) {
-            if (processed >= total) {
-                status.style.display = "none";
-            } else {
-                status.textContent =
-                    "Loading map… " +
-                    Math.round(processed / total * 100) + "%";
-            }
-        },
-
-        iconCreateFunction: function (cluster) {
-            return makeIcon(distinctClusterCount(cluster));
-        }
+    const legend = L.control({
+        position: "bottomright"
     });
 
-    // 聚合点悬停：只显示犯罪数量
-    clusters.on("clustermouseover", function (event) {
-        const cluster = event.layer;
-        const content = tooltipText(distinctClusterCount(cluster));
+    legend.onAdd = function () {
+        const div = L.DomUtil.create("div", "map-legend");
 
-        if (cluster.getTooltip()) {
-            cluster.setTooltipContent(content);
-        } else {
-            cluster.bindTooltip(content, {
-                direction: "top",
-                className: "crime-tooltip",
-                opacity: 0.98
+        div.innerHTML =
+            "<b>Relative crime density</b>" +
+            '<div class="legend-gradient"></div>' +
+            '<div class="legend-labels">' +
+            "<span>Low</span><span>High</span></div>";
+
+        L.DomEvent.disableClickPropagation(div);
+        L.DomEvent.disableScrollPropagation(div);
+
+        return div;
+    };
+
+    legend.addTo(map);
+
+    const workerSource = `
+        let points = [];
+
+        function lowerBound(value) {
+            let left = 0;
+            let right = points.length;
+
+            while (left < right) {
+                const middle = (left + right) >>> 1;
+
+                if (points[middle].x < value) {
+                    left = middle + 1;
+                } else {
+                    right = middle;
+                }
+            }
+
+            return left;
+        }
+
+        self.onmessage = function (event) {
+            const message = event.data;
+
+            if (message.type === "init") {
+                points = message.points;
+
+                points.sort(function (a, b) {
+                    return a.x - b.x;
+                });
+
+                self.postMessage({type: "ready"});
+                return;
+            }
+
+            if (message.type !== "query") {
+                return;
+            }
+
+            const x = message.x;
+            const y = message.y;
+            const radius = message.radius;
+            const radiusSquared = radius * radius;
+            const rightEdge = x + radius;
+            const ids = new Set();
+
+            let index = lowerBound(x - radius);
+
+            for (; index < points.length; index++) {
+                const point = points[index];
+
+                if (point.x > rightEdge) {
+                    break;
+                }
+
+                const dx = point.x - x;
+                const dy = point.y - y;
+
+                if (dx * dx + dy * dy <= radiusSquared) {
+                    for (const id of point.ids) {
+                        ids.add(id);
+                    }
+                }
+            }
+
+            self.postMessage({
+                type: "result",
+                token: message.token,
+                count: ids.size
             });
+        };
+    `;
+
+    let worker = null;
+    let workerURL = null;
+    let workerReady = false;
+    let queryInFlight = false;
+    let pendingQuery = null;
+
+    let moving = false;
+    let mouseInside = false;
+    let queryToken = 0;
+    let timer = null;
+    let hoverPosition = null;
+
+    const HOVER_RADIUS_PIXELS = 18;
+
+    const tooltip = L.tooltip({
+        direction: "top",
+        offset: [0, -8],
+        className: "crime-tooltip",
+        opacity: 0.98,
+        interactive: false
+    });
+
+    function sendPendingQuery() {
+        if (
+            !workerReady ||
+            queryInFlight ||
+            !pendingQuery ||
+            moving ||
+            !mouseInside
+        ) {
+            return;
         }
 
-        cluster.openTooltip();
-    });
-
-    clusters.on("clustermouseout", function (event) {
-        event.layer.closeTooltip();
-    });
-
-    // 先创建每个实际坐标的圆点
-    const markers = rows.map(function (row) {
-        const incidentKeys = row[2];
-        const count = incidentKeys.length;
-
-        const marker = L.marker([row[0], row[1]], {
-            icon: makeIcon(count),
-            incidentKeys: incidentKeys,
-            keyboard: true,
-            alt: countText(count) + " distinct incidents"
-        });
-
-        marker.bindTooltip(tooltipText(count), {
-            direction: "top",
-            className: "crime-tooltip",
-            opacity: 0.98
-        });
-
-        marker.on("click", function () {
-            marker.openTooltip();
-        });
-
-        return marker;
-    });
-
-    map.addLayer(clusters);
-    clusters.addLayers(markers);
-
-    map.on("zoomstart", function () {
-        map.closeTooltip();
-    });
-
-    // 适应 Streamlit 页面宽度
-    if (window.ResizeObserver) {
-        const observer = new ResizeObserver(function () {
-            map.invalidateSize({pan: false});
-        });
-        observer.observe(document.getElementById("map"));
+        queryInFlight = true;
+        worker.postMessage(pendingQuery);
+        pendingQuery = null;
     }
+
+    function cancelHover() {
+        queryToken += 1;
+        clearTimeout(timer);
+        pendingQuery = null;
+        tooltip.remove();
+    }
+
+    function showWorkerError() {
+        workerReady = false;
+        queryInFlight = false;
+        pendingQuery = null;
+        tooltip.remove();
+
+        messageElement.style.display = "block";
+        messageElement.textContent =
+            "Hover counting is unavailable. Refresh the page to retry.";
+
+        if (worker) {
+            worker.terminate();
+        }
+
+        if (workerURL) {
+            URL.revokeObjectURL(workerURL);
+            workerURL = null;
+        }
+    }
+
+    try {
+        const blob = new Blob(
+            [workerSource],
+            {type: "text/javascript"}
+        );
+
+        workerURL = URL.createObjectURL(blob);
+        worker = new Worker(workerURL);
+
+        worker.onmessage = function (event) {
+            const message = event.data;
+
+            if (message.type === "ready") {
+                workerReady = true;
+                messageElement.style.display = "none";
+
+                if (workerURL) {
+                    URL.revokeObjectURL(workerURL);
+                    workerURL = null;
+                }
+
+                sendPendingQuery();
+                return;
+            }
+
+            if (message.type !== "result") {
+                return;
+            }
+
+            queryInFlight = false;
+
+            if (
+                message.token === queryToken &&
+                mouseInside &&
+                !moving &&
+                hoverPosition
+            ) {
+                tooltip
+                    .setLatLng(hoverPosition)
+                    .setContent(
+                        "Distinct incidents: <b>" +
+                        message.count.toLocaleString("en-US") +
+                        "</b>"
+                    )
+                    .addTo(map);
+            }
+
+            sendPendingQuery();
+        };
+
+        worker.onerror = showWorkerError;
+
+        worker.postMessage({
+            type: "init",
+            points: queryPoints
+        });
+
+    } catch (error) {
+        showWorkerError();
+        console.error(error);
+    }
+
+    function prepareQuery(position, token) {
+        const projected = map.project(position, 0);
+
+        pendingQuery = {
+            type: "query",
+            token: token,
+            x: projected.x,
+            y: projected.y,
+            radius:
+                HOVER_RADIUS_PIXELS /
+                Math.pow(2, map.getZoom())
+        };
+
+        sendPendingQuery();
+    }
+
+    map.on("mousemove", function (event) {
+        mouseInside = true;
+
+        if (moving) {
+            return;
+        }
+
+        cancelHover();
+        hoverPosition = event.latlng;
+
+        const token = queryToken;
+        const position = event.latlng;
+
+        timer = setTimeout(function () {
+            if (
+                moving ||
+                !mouseInside ||
+                token !== queryToken
+            ) {
+                return;
+            }
+
+            prepareQuery(position, token);
+        }, 120);
+    });
+
+    map.on("click", function (event) {
+        if (moving) {
+            return;
+        }
+
+        mouseInside = true;
+        cancelHover();
+        hoverPosition = event.latlng;
+
+        prepareQuery(event.latlng, queryToken);
+    });
+
+    mapElement.addEventListener("mouseleave", function () {
+        mouseInside = false;
+        cancelHover();
+    });
+
+    map.on("movestart zoomstart", function () {
+        moving = true;
+        cancelHover();
+    });
+
+    map.on("moveend", function () {
+        moving = false;
+    });
+
+    map.on("zoomend", function () {
+        moving = false;
+
+        heat.setOptions({
+            maxZoom: map.getZoom()
+        });
+    });
+
+    window.addEventListener("resize", function () {
+        map.invalidateSize({pan: false});
+    });
+
+    window.addEventListener("pagehide", function () {
+        if (worker) {
+            worker.terminate();
+        }
+
+        if (workerURL) {
+            URL.revokeObjectURL(workerURL);
+        }
+    });
 })();
 </script>
 </body>
 </html>
 """
 
+
+# 将地图嵌入页面并保持所有犯罪数据仅在内存中处理 / Embed the map while keeping crime data processing in memory.
 components.html(
     map_html.replace("__CRIME_PAYLOAD__", payload_json),
     height=715,
     scrolling=False,
 )
 
+
+# 说明悬停计数随缩放变化的统计范围 / Explain how the hover counting area changes with zoom.
 st.caption(
-    "Numbers show distinct incidents within each point or cluster. "
-    "Nearby points merge when zooming out and separate when zooming in."
+    "Hover counts show distinct incidents within 18 screen pixels "
+    "of the pointer. Zooming out expands the geographic area counted; "
+    "zooming in narrows it. Counts follow the selected filters."
 )
 
+
+# 区分热力颜色与附近案件数量 / Distinguish heatmap colors from nearby incident counts.
 st.caption(
-    "An incident recorded at multiple locations is counted once "
-    "within a cluster. If those locations separate into different "
-    "clusters, the incident may appear in each; displayed counts "
-    "should not be summed as a countywide distinct total."
+    "Heatmap colors show smoothed relative density. "
+    "The hover count is a local neighborhood total, "
+    "not the total for an entire colored hotspot."
 )
