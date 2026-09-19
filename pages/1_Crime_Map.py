@@ -1,3 +1,5 @@
+CARTO_API_KEY = "cb1_3q90_1_c278066154a49d58ab9d72c0"
+
 import json
 
 import pandas as pd
@@ -8,9 +10,26 @@ from data_service import load_and_clean_data
 from ui import setup_page, load_with_message, source_caption
 
 
-# 设置页面并加载在线数据 / Set up the page and load online data.
+# 设置页面并读取可选的密钥配置 / Set up the page and read optional secret configuration.
 setup_page("Crime Map", "🗺️")
 
+if not CARTO_API_KEY.strip():
+    try:
+        CARTO_API_KEY = str(st.secrets["CARTO_API_KEY"]).strip()
+    except (FileNotFoundError, KeyError):
+        CARTO_API_KEY = ""
+
+CARTO_API_KEY = CARTO_API_KEY.strip()
+
+if not CARTO_API_KEY:
+    st.info(
+        "Please set CARTO_API_KEY at the top of this file "
+        "or in Streamlit Secrets."
+    )
+    st.stop()
+
+
+# 加载在线案件数据 / Load online incident data.
 st.write(
     "Explore the spatial distribution of crime incidents "
     "across Montgomery County."
@@ -127,7 +146,7 @@ st.caption(
 )
 
 
-# 保留有效案件坐标 / Keep valid incident coordinates.
+# 保留有效坐标并删除重复案件位置 / Keep valid coordinates and remove duplicate incident locations.
 map_df = filtered_df.loc[
     filtered_df["Valid_Coordinates"].fillna(False),
     ["Incident ID", "Latitude", "Longitude"],
@@ -174,7 +193,7 @@ if map_df.empty:
     st.stop()
 
 
-# 使用整数编号识别同一案件 / Identify each incident using an integer identifier.
+# 使用整数编号识别同一案件 / Identify each incident with an integer identifier.
 map_df["Incident_Key"] = pd.factorize(
     map_df["Incident ID"],
     sort=False,
@@ -201,8 +220,9 @@ payload = [
 ]
 
 
-# 保留最初的热力颜色和参数 / Keep the original heatmap colors and parameters.
+# 保留原始热力颜色并设置悬停范围 / Keep the original heatmap colors and set the hover radius.
 config = {
+    "apiKey": CARTO_API_KEY,
     "points": payload,
     "colors": [
         [255, 255, 178, 255],
@@ -216,8 +236,6 @@ config = {
     "hoverRadius": 18,
 }
 
-
-# 安全地序列化浏览器配置 / Safely serialize the browser configuration.
 config_json = json.dumps(
     config,
     ensure_ascii=True,
@@ -226,7 +244,7 @@ config_json = json.dumps(
 ).replace("<", "\\u003c")
 
 
-# 创建只包含道路与水系的无标签地图 / Create a label-free map containing only roads and water.
+# 创建 CARTO 无标签底图和交互热力图 / Create a CARTO label-free basemap and interactive heatmap.
 map_html = r"""
 <!DOCTYPE html>
 <html>
@@ -318,7 +336,7 @@ map_html = r"""
     <script src="https://unpkg.com/deck.gl@8.9.36/dist.min.js"></script>
 
     <script>
-    (async () => {
+    (() => {
         const config = __CONFIG__;
         const wrapper = document.getElementById("wrapper");
         const tooltip = document.getElementById("tooltip");
@@ -331,7 +349,7 @@ map_html = r"""
         }
 
         const messages = {
-            map: "Loading background map...",
+            map: "Loading CARTO background...",
             heat: "",
             hover: "Preparing hover counts..."
         };
@@ -342,95 +360,39 @@ map_html = r"""
             status.style.display = text ? "block" : "none";
         }
 
-        let map;
-        let heat;
-        let worker;
-        let workerURL;
-        let observer;
-        let mapTimeout;
-        let hoverTimeout;
-        let timer;
-        let token = 0;
-        let busy = false;
-        let ready = false;
-        let pending = null;
-        let disposed = false;
+        function cartoRequest(url) {
+            const parsed = new URL(url, window.location.href);
 
-        function hideTooltip() {
-            token += 1;
-            pending = null;
-            clearTimeout(timer);
-            tooltip.style.display = "none";
-        }
-
-        window.addEventListener("pagehide", () => {
-            disposed = true;
-            clearTimeout(timer);
-            clearTimeout(mapTimeout);
-            clearTimeout(hoverTimeout);
-
-            if (observer) observer.disconnect();
-            if (worker) worker.terminate();
-            if (workerURL) URL.revokeObjectURL(workerURL);
-            if (heat) heat.finalize();
-            if (map) map.remove();
-        });
-
-        let vectorSource;
-
-        try {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 15000);
-
-            try {
-                const response = await fetch(
-                    "https://tiles.openfreemap.org/styles/liberty",
-                    {signal: controller.signal}
-                );
-
-                if (!response.ok) {
-                    throw new Error("Map configuration HTTP " + response.status);
-                }
-
-                const originalStyle = await response.json();
-
-                vectorSource = Object.values(originalStyle.sources).find(
-                    source => source.type === "vector"
-                );
-
-                if (!vectorSource) {
-                    throw new Error("No vector map source was found.");
-                }
-
-                vectorSource = {...vectorSource};
-
-                if (!vectorSource.attribution) {
-                    vectorSource.attribution =
-                        '<a href="https://openfreemap.org/" target="_blank">'
-                        + 'OpenFreeMap</a> '
-                        + '&copy; <a href="https://openmaptiles.org/" '
-                        + 'target="_blank">OpenMapTiles</a> '
-                        + 'Data from <a href="https://www.openstreetmap.org/copyright" '
-                        + 'target="_blank">OpenStreetMap</a>';
-                }
-            } finally {
-                clearTimeout(timeout);
+            if (
+                parsed.protocol === "https:"
+                && (
+                    parsed.hostname === "basemaps.cartocdn.com"
+                    || parsed.hostname.endsWith(".basemaps.cartocdn.com")
+                )
+            ) {
+                parsed.searchParams.set("key", config.apiKey);
+                return {url: parsed.toString()};
             }
-        } catch (error) {
-            status.textContent =
-                "OpenFreeMap could not load: " + error.message
-                + ". Check your connection and refresh.";
-            console.error(error);
-            return;
-        }
 
-        if (disposed) return;
+            return {url};
+        }
 
         const simpleStyle = {
             version: 8,
-            name: "Roads and Water",
+            name: "CARTO Roads and Water",
             sources: {
-                geography: vectorSource
+                carto: {
+                    type: "vector",
+                    url:
+                        "https://tiles.basemaps.cartocdn.com/"
+                        + "vector/carto.streets/v1/tiles.json",
+                    attribution:
+                        '&copy; <a href="https://www.openstreetmap.org/copyright" '
+                        + 'target="_blank" rel="noopener">OpenStreetMap</a> '
+                        + 'contributors &copy; '
+                        + '<a href="https://carto.com/attributions" '
+                        + 'target="_blank" rel="noopener">CARTO</a>'
+                }
             },
             layers: [
                 {
@@ -443,24 +405,24 @@ map_html = r"""
                 {
                     id: "water",
                     type: "fill",
-                    source: "geography",
+                    source: "carto",
                     "source-layer": "water",
                     paint: {
-                        "fill-color": "#cddfe7",
+                        "fill-color": "#d4dfe4",
                         "fill-opacity": 1
                     }
                 },
                 {
                     id: "waterways",
                     type: "line",
-                    source: "geography",
+                    source: "carto",
                     "source-layer": "waterway",
                     layout: {
                         "line-cap": "round",
                         "line-join": "round"
                     },
                     paint: {
-                        "line-color": "#c1d7e2",
+                        "line-color": "#c6d8e1",
                         "line-width": [
                             "interpolate", ["linear"], ["zoom"],
                             6, 0.4,
@@ -473,12 +435,11 @@ map_html = r"""
                 {
                     id: "minor-roads",
                     type: "line",
-                    source: "geography",
+                    source: "carto",
                     "source-layer": "transportation",
                     minzoom: 11,
                     filter: [
-                        "in", "class",
-                        "minor", "service"
+                        "in", "class", "minor", "service"
                     ],
                     layout: {
                         "line-cap": "round",
@@ -497,7 +458,7 @@ map_html = r"""
                 {
                     id: "main-roads",
                     type: "line",
-                    source: "geography",
+                    source: "carto",
                     "source-layer": "transportation",
                     filter: [
                         "in", "class",
@@ -509,7 +470,7 @@ map_html = r"""
                         "line-join": "round"
                     },
                     paint: {
-                        "line-color": "#c9c9c9",
+                        "line-color": "#cccccc",
                         "line-width": [
                             "interpolate", ["linear"], ["zoom"],
                             6, 0.4,
@@ -521,6 +482,26 @@ map_html = r"""
                 }
             ]
         };
+
+        let map;
+        let heat;
+        let worker;
+        let workerURL;
+        let observer;
+        let mapTimeout;
+        let hoverTimeout;
+        let timer;
+        let token = 0;
+        let ready = false;
+        let busy = false;
+        let pending = null;
+
+        function hideTooltip() {
+            token += 1;
+            pending = null;
+            clearTimeout(timer);
+            tooltip.style.display = "none";
+        }
 
         function getViewState() {
             const center = map.getCenter();
@@ -534,10 +515,23 @@ map_html = r"""
             };
         }
 
+        window.addEventListener("pagehide", () => {
+            clearTimeout(timer);
+            clearTimeout(mapTimeout);
+            clearTimeout(hoverTimeout);
+
+            if (observer) observer.disconnect();
+            if (worker) worker.terminate();
+            if (workerURL) URL.revokeObjectURL(workerURL);
+            if (heat) heat.finalize();
+            if (map) map.remove();
+        });
+
         try {
             map = new maplibregl.Map({
                 container: "basemap",
                 style: simpleStyle,
+                transformRequest: cartoRequest,
                 center: [-77.20, 39.13],
                 zoom: 9.4,
                 minZoom: 5,
@@ -563,7 +557,7 @@ map_html = r"""
 
             mapTimeout = setTimeout(() => {
                 messages.map =
-                    "Background map is taking too long to load. Check your connection.";
+                    "CARTO is taking too long to load. Check your connection.";
                 updateStatus();
             }, 20000);
 
@@ -576,13 +570,21 @@ map_html = r"""
             map.on("error", event => {
                 clearTimeout(mapTimeout);
 
-                const detail = event.error && event.error.message
-                    ? event.error.message
-                    : "Unknown map error";
+                const error = event.error || {};
+                const code = error.status || error.statusCode;
 
-                messages.map = "Background map error: " + detail;
+                if (code === 401 || code === 403) {
+                    messages.map =
+                        "CARTO authorization failed. Check your Basemaps API key "
+                        + "and its allowed domains.";
+                } else {
+                    messages.map =
+                        "CARTO background failed to load"
+                        + (code ? " (HTTP " + code + ")" : "")
+                        + ". Check the key and connection.";
+                }
+
                 updateStatus();
-                console.error(event.error);
             });
 
             heat = new deck.Deck({
@@ -605,10 +607,10 @@ map_html = r"""
                         pickable: false
                     })
                 ],
-                onError: error => {
-                    messages.heat = "Heatmap rendering failed.";
+                onError: () => {
+                    messages.heat =
+                        "Heatmap rendering failed. Check browser WebGL support.";
                     updateStatus();
-                    console.error(error);
                 }
             });
 
@@ -624,10 +626,9 @@ map_html = r"""
 
         } catch (error) {
             clearTimeout(mapTimeout);
-            messages.map = "Map initialization failed: " + error.message;
+            messages.map = "Map initialization failed.";
             messages.hover = "";
             updateStatus();
-            console.error(error);
             return;
         }
 
@@ -679,19 +680,19 @@ map_html = r"""
                 }
 
                 const xy = project(data.lng, data.lat);
-                const r = data.radius;
+                const radius = data.radius;
                 const ids = new Set();
-                let index = lowerBound(xy[0] - r);
+                let index = lowerBound(xy[0] - radius);
 
                 while (
                     index < points.length
-                    && points[index].x <= xy[0] + r
+                    && points[index].x <= xy[0] + radius
                 ) {
                     const point = points[index];
                     const dx = point.x - xy[0];
                     const dy = point.y - xy[1];
 
-                    if (dx * dx + dy * dy <= r * r) {
+                    if (dx * dx + dy * dy <= radius * radius) {
                         for (const id of point.ids) {
                             ids.add(id);
                         }
@@ -721,7 +722,7 @@ map_html = r"""
             worker.postMessage(query);
         }
 
-        function failWorker(error) {
+        function failWorker() {
             ready = false;
             busy = false;
             hideTooltip();
@@ -736,7 +737,6 @@ map_html = r"""
 
             messages.hover = "Hover counts could not initialize.";
             updateStatus();
-            console.error(error);
         }
 
         try {
@@ -748,10 +748,7 @@ map_html = r"""
 
             worker = new Worker(workerURL);
             worker.onerror = failWorker;
-
-            hoverTimeout = setTimeout(() => {
-                failWorker(new Error("Hover initialization timed out."));
-            }, 20000);
+            hoverTimeout = setTimeout(failWorker, 20000);
 
             worker.onmessage = ({data}) => {
                 if (data.type === "ready") {
@@ -800,7 +797,7 @@ map_html = r"""
             });
 
         } catch (error) {
-            failWorker(error);
+            failWorker();
         }
 
         map.on("mousemove", event => {
@@ -881,7 +878,7 @@ st.markdown(
 )
 
 
-# 说明热力颜色与悬停案件数的含义 / Explain heatmap colors and hover incident counts.
+# 说明热力颜色与悬停数量的含义 / Explain heatmap colors and hover counts.
 st.caption(
     "Colors show relative crime density. "
     "Hover counts show distinct incidents within 18 screen pixels "
