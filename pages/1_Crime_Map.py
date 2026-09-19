@@ -226,7 +226,7 @@ config_json = json.dumps(
 ).replace("<", "\\u003c")
 
 
-# 创建无标签道路水系底图和交互热力图 / Create a label-free roads-and-water basemap and interactive heatmap.
+# 使用 OpenFreeMap 官方样式并仅保留道路与水系 / Use the official OpenFreeMap style and keep only roads and water.
 map_html = r"""
 <!DOCTYPE html>
 <html>
@@ -342,111 +342,8 @@ map_html = r"""
             status.style.display = text ? "block" : "none";
         }
 
-        const simpleStyle = {
-            version: 8,
-            name: "OpenFreeMap Roads and Water",
-            sources: {
-                openmaptiles: {
-                    type: "vector",
-                    url: "https://tiles.openfreemap.org/planet",
-                    attribution:
-                        '<a href="https://openfreemap.org/" '
-                        + 'target="_blank" rel="noopener">OpenFreeMap</a> '
-                        + '&copy; <a href="https://openmaptiles.org/" '
-                        + 'target="_blank" rel="noopener">OpenMapTiles</a> '
-                        + 'Data from '
-                        + '<a href="https://www.openstreetmap.org/copyright" '
-                        + 'target="_blank" rel="noopener">OpenStreetMap</a>'
-                }
-            },
-            layers: [
-                {
-                    id: "background",
-                    type: "background",
-                    paint: {
-                        "background-color": "#fafafa"
-                    }
-                },
-                {
-                    id: "water",
-                    type: "fill",
-                    source: "openmaptiles",
-                    "source-layer": "water",
-                    paint: {
-                        "fill-color": "#d4dfe4",
-                        "fill-opacity": 1
-                    }
-                },
-                {
-                    id: "waterways",
-                    type: "line",
-                    source: "openmaptiles",
-                    "source-layer": "waterway",
-                    layout: {
-                        "line-cap": "round",
-                        "line-join": "round"
-                    },
-                    paint: {
-                        "line-color": "#c6d8e1",
-                        "line-width": [
-                            "interpolate", ["linear"], ["zoom"],
-                            6, 0.4,
-                            10, 0.8,
-                            14, 1.6,
-                            18, 3
-                        ]
-                    }
-                },
-                {
-                    id: "minor-roads",
-                    type: "line",
-                    source: "openmaptiles",
-                    "source-layer": "transportation",
-                    minzoom: 11,
-                    filter: [
-                        "in", "class", "minor", "service"
-                    ],
-                    layout: {
-                        "line-cap": "round",
-                        "line-join": "round"
-                    },
-                    paint: {
-                        "line-color": "#e2e2e2",
-                        "line-width": [
-                            "interpolate", ["linear"], ["zoom"],
-                            11, 0.4,
-                            14, 0.8,
-                            18, 2.5
-                        ]
-                    }
-                },
-                {
-                    id: "main-roads",
-                    type: "line",
-                    source: "openmaptiles",
-                    "source-layer": "transportation",
-                    filter: [
-                        "in", "class",
-                        "motorway", "trunk", "primary",
-                        "secondary", "tertiary"
-                    ],
-                    layout: {
-                        "line-cap": "round",
-                        "line-join": "round"
-                    },
-                    paint: {
-                        "line-color": "#cccccc",
-                        "line-width": [
-                            "interpolate", ["linear"], ["zoom"],
-                            6, 0.4,
-                            10, 0.9,
-                            14, 1.8,
-                            18, 4
-                        ]
-                    }
-                }
-            ]
-        };
+        const OPENFREEMAP_STYLE =
+            "https://tiles.openfreemap.org/styles/positron";
 
         let map;
         let heat;
@@ -495,7 +392,7 @@ map_html = r"""
         try {
             map = new maplibregl.Map({
                 container: "basemap",
-                style: simpleStyle,
+                style: OPENFREEMAP_STYLE,
                 center: [-77.20, 39.13],
                 zoom: 9.4,
                 minZoom: 5,
@@ -521,11 +418,58 @@ map_html = r"""
 
             mapTimeout = setTimeout(() => {
                 messages.map =
-                    "Background map is taking too long to load. Check your connection.";
+                    "OpenFreeMap is taking too long to load. Check your connection.";
                 updateStatus();
             }, 20000);
 
-            map.on("load", () => {
+            map.on("style.load", () => {
+                const style = map.getStyle();
+                const layers = style && style.layers ? style.layers : [];
+
+                for (const layer of layers) {
+                    const sourceLayer = layer["source-layer"] || "";
+                    const layerId = String(layer.id || "").toLowerCase();
+
+                    const keepBackground =
+                        layer.type === "background";
+
+                    const keepWater =
+                        (
+                            sourceLayer === "water"
+                            || sourceLayer === "waterway"
+                        )
+                        && (
+                            layer.type === "fill"
+                            || layer.type === "line"
+                        );
+
+                    const keepRoad =
+                        sourceLayer === "transportation"
+                        && layer.type === "line"
+                        && !(
+                            layerId.includes("rail")
+                            || layerId.includes("transit")
+                            || layerId.includes("aeroway")
+                            || layerId.includes("runway")
+                        );
+
+                    if (
+                        !keepBackground
+                        && !keepWater
+                        && !keepRoad
+                    ) {
+                        try {
+                            map.setLayoutProperty(
+                                layer.id,
+                                "visibility",
+                                "none"
+                            );
+                        } catch (error) {
+                            // Ignore layers that do not expose visibility.
+                        }
+                    }
+                }
+
                 clearTimeout(mapTimeout);
                 messages.map = "";
                 updateStatus();
