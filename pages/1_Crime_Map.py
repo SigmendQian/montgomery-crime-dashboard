@@ -102,7 +102,7 @@ if selected_crime_name2 != "All":
     ]
 
 
-# 应用日期与小时筛选并包含结束当天 / Apply date and hour filters including the entire final day.
+# 应用日期和小时筛选并包含结束当天 / Apply date and hour filters including the entire final day.
 if (
     not isinstance(selected_date_range, (tuple, list))
     or len(selected_date_range) != 2
@@ -174,14 +174,14 @@ if map_df.empty:
     st.stop()
 
 
-# 为案件建立用于去重统计的整数编号 / Assign integer identifiers for distinct incident counting.
+# 使用整数编号识别同一案件 / Identify each incident using an integer identifier.
 map_df["Incident_Key"] = pd.factorize(
     map_df["Incident ID"],
     sort=False,
 )[0]
 
 
-# 合并相同位置并保留案件编号 / Group identical locations and retain incident identifiers.
+# 合并相同坐标并保留案件编号 / Group identical coordinates and retain incident identifiers.
 locations = (
     map_df.groupby(
         ["Latitude", "Longitude"],
@@ -201,41 +201,42 @@ payload = [
 ]
 
 
-# 保留最初的六段热力颜色 / Keep the original six heatmap colors.
-colors = [
-    [255, 255, 178, 255],
-    [254, 217, 118, 255],
-    [254, 178, 76, 255],
-    [253, 141, 60, 255],
-    [240, 59, 32, 255],
-    [189, 0, 38, 255],
-]
+# 保留最初的热力颜色和参数 / Keep the original heatmap colors and parameters.
+config = {
+    "points": payload,
+    "colors": [
+        [255, 255, 178, 255],
+        [254, 217, 118, 255],
+        [254, 178, 76, 255],
+        [253, 141, 60, 255],
+        [240, 59, 32, 255],
+        [189, 0, 38, 255],
+    ],
+    "heatRadius": 35,
+    "hoverRadius": 18,
+}
 
 
-# 安全地传递浏览器地图数据 / Safely pass map data to the browser.
+# 安全地序列化浏览器配置 / Safely serialize the browser configuration.
 config_json = json.dumps(
-    {
-        "points": payload,
-        "colors": colors,
-    },
+    config,
     ensure_ascii=True,
     allow_nan=False,
     separators=(",", ":"),
 ).replace("<", "\\u003c")
 
 
-# 使用图片底图并同步热力图与悬停统计 / Use a raster basemap and synchronize the heatmap and hover counts.
+# 创建只包含道路与水系的无标签地图 / Create a label-free map containing only roads and water.
 map_html = r"""
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="referrer" content="strict-origin-when-cross-origin">
 
     <link
         rel="stylesheet"
-        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
     >
 
     <style>
@@ -246,23 +247,24 @@ map_html = r"""
             font-family: Arial, sans-serif;
         }
 
-        #map {
+        #wrapper {
             position: relative;
             width: 100%;
             height: 700px;
             overflow: hidden;
             border-radius: 8px;
-            background: #f4f4f4;
+            background: #fafafa;
         }
 
-        #map .leaflet-tile-pane {
-            filter: grayscale(1) brightness(1.05);
+        #basemap {
+            position: absolute;
+            inset: 0;
         }
 
         #heat {
             position: absolute;
             inset: 0;
-            z-index: 450;
+            z-index: 2;
             pointer-events: none;
         }
 
@@ -270,15 +272,20 @@ map_html = r"""
             pointer-events: none !important;
         }
 
+        .maplibregl-control-container {
+            position: relative;
+            z-index: 5;
+        }
+
         #tooltip {
             position: absolute;
             display: none;
-            z-index: 1000;
+            z-index: 10;
             pointer-events: none;
             padding: 9px 12px;
             border-radius: 6px;
             background: rgba(30, 30, 30, 0.94);
-            color: #fff;
+            color: white;
             font-size: 14px;
             white-space: nowrap;
         }
@@ -286,46 +293,47 @@ map_html = r"""
         #status {
             position: absolute;
             top: 12px;
-            left: 55px;
-            z-index: 1000;
-            max-width: 70%;
-            pointer-events: none;
+            left: 12px;
+            z-index: 15;
+            max-width: 75%;
             padding: 8px 12px;
             border-radius: 5px;
             background: rgba(255, 255, 255, 0.96);
             color: #444;
             font-size: 13px;
+            pointer-events: none;
         }
     </style>
 </head>
 
 <body>
-    <div id="map">
+    <div id="wrapper">
+        <div id="basemap"></div>
         <div id="heat"></div>
         <div id="tooltip"></div>
         <div id="status">Loading map...</div>
     </div>
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
     <script src="https://unpkg.com/deck.gl@8.9.36/dist.min.js"></script>
 
     <script>
-    (() => {
+    (async () => {
         const config = __CONFIG__;
-        const container = document.getElementById("map");
+        const wrapper = document.getElementById("wrapper");
         const tooltip = document.getElementById("tooltip");
         const status = document.getElementById("status");
 
-        if (!window.L || !window.deck) {
+        if (!window.maplibregl || !window.deck) {
             status.textContent =
-                "Map libraries could not load. Check your connection.";
+                "Map libraries failed to load. Check your connection.";
             return;
         }
 
         const messages = {
-            tiles: "Loading background map...",
-            hover: "Preparing hover counts...",
-            heat: ""
+            map: "Loading background map...",
+            heat: "",
+            hover: "Preparing hover counts..."
         };
 
         function updateStatus() {
@@ -334,69 +342,19 @@ map_html = r"""
             status.style.display = text ? "block" : "none";
         }
 
-        const map = L.map("map", {
-            center: [39.13, -77.20],
-            zoom: 10.4,
-            minZoom: 6,
-            maxZoom: 19,
-            zoomSnap: 0.1,
-            zoomDelta: 0.5,
-            zoomAnimation: false,
-            fadeAnimation: false,
-            markerZoomAnimation: false,
-            scrollWheelZoom: true,
-            doubleClickZoom: true,
-            touchZoom: true,
-            dragging: true,
-            inertia: false
-        });
-
-        let tilesLoaded = 0;
-
-        const tileTimeout = setTimeout(() => {
-            if (tilesLoaded === 0) {
-                messages.tiles =
-                    "Background map is taking too long to load. Check your connection.";
-                updateStatus();
-            }
-        }, 20000);
-
-        const tiles = L.tileLayer(
-            "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-            {
-                maxZoom: 19,
-                noWrap: true,
-                attribution:
-                    '&copy; <a href="https://www.openstreetmap.org/copyright" '
-                    + 'target="_blank" rel="noopener">'
-                    + 'OpenStreetMap</a> contributors'
-            }
-        );
-
-        tiles.on("tileload", () => {
-            tilesLoaded += 1;
-            clearTimeout(tileTimeout);
-            messages.tiles = "";
-            updateStatus();
-        });
-
-        tiles.on("tileerror", () => {
-            messages.tiles =
-                "Some background tiles failed to load. Try refreshing.";
-            updateStatus();
-        });
-
-        tiles.addTo(map);
-
-        let heat = null;
+        let map;
+        let heat;
+        let worker;
+        let workerURL;
+        let observer;
+        let mapTimeout;
+        let hoverTimeout;
+        let timer;
         let token = 0;
-        let timer = null;
-        let pending = null;
-        let ready = false;
         let busy = false;
-        let moving = false;
-        let worker = null;
-        let workerURL = null;
+        let ready = false;
+        let pending = null;
+        let disposed = false;
 
         function hideTooltip() {
             token += 1;
@@ -405,25 +363,234 @@ map_html = r"""
             tooltip.style.display = "none";
         }
 
+        window.addEventListener("pagehide", () => {
+            disposed = true;
+            clearTimeout(timer);
+            clearTimeout(mapTimeout);
+            clearTimeout(hoverTimeout);
+
+            if (observer) observer.disconnect();
+            if (worker) worker.terminate();
+            if (workerURL) URL.revokeObjectURL(workerURL);
+            if (heat) heat.finalize();
+            if (map) map.remove();
+        });
+
+        let vectorSource;
+
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 15000);
+
+            try {
+                const response = await fetch(
+                    "https://tiles.openfreemap.org/styles/liberty",
+                    {signal: controller.signal}
+                );
+
+                if (!response.ok) {
+                    throw new Error("Map configuration HTTP " + response.status);
+                }
+
+                const originalStyle = await response.json();
+
+                vectorSource = Object.values(originalStyle.sources).find(
+                    source => source.type === "vector"
+                );
+
+                if (!vectorSource) {
+                    throw new Error("No vector map source was found.");
+                }
+
+                vectorSource = {...vectorSource};
+
+                if (!vectorSource.attribution) {
+                    vectorSource.attribution =
+                        '<a href="https://openfreemap.org/" target="_blank">'
+                        + 'OpenFreeMap</a> '
+                        + '&copy; <a href="https://openmaptiles.org/" '
+                        + 'target="_blank">OpenMapTiles</a> '
+                        + 'Data from <a href="https://www.openstreetmap.org/copyright" '
+                        + 'target="_blank">OpenStreetMap</a>';
+                }
+            } finally {
+                clearTimeout(timeout);
+            }
+        } catch (error) {
+            status.textContent =
+                "OpenFreeMap could not load: " + error.message
+                + ". Check your connection and refresh.";
+            console.error(error);
+            return;
+        }
+
+        if (disposed) return;
+
+        const simpleStyle = {
+            version: 8,
+            name: "Roads and Water",
+            sources: {
+                geography: vectorSource
+            },
+            layers: [
+                {
+                    id: "background",
+                    type: "background",
+                    paint: {
+                        "background-color": "#fafafa"
+                    }
+                },
+                {
+                    id: "water",
+                    type: "fill",
+                    source: "geography",
+                    "source-layer": "water",
+                    paint: {
+                        "fill-color": "#cddfe7",
+                        "fill-opacity": 1
+                    }
+                },
+                {
+                    id: "waterways",
+                    type: "line",
+                    source: "geography",
+                    "source-layer": "waterway",
+                    layout: {
+                        "line-cap": "round",
+                        "line-join": "round"
+                    },
+                    paint: {
+                        "line-color": "#c1d7e2",
+                        "line-width": [
+                            "interpolate", ["linear"], ["zoom"],
+                            6, 0.4,
+                            10, 0.8,
+                            14, 1.6,
+                            18, 3
+                        ]
+                    }
+                },
+                {
+                    id: "minor-roads",
+                    type: "line",
+                    source: "geography",
+                    "source-layer": "transportation",
+                    minzoom: 11,
+                    filter: [
+                        "in", "class",
+                        "minor", "service"
+                    ],
+                    layout: {
+                        "line-cap": "round",
+                        "line-join": "round"
+                    },
+                    paint: {
+                        "line-color": "#e2e2e2",
+                        "line-width": [
+                            "interpolate", ["linear"], ["zoom"],
+                            11, 0.4,
+                            14, 0.8,
+                            18, 2.5
+                        ]
+                    }
+                },
+                {
+                    id: "main-roads",
+                    type: "line",
+                    source: "geography",
+                    "source-layer": "transportation",
+                    filter: [
+                        "in", "class",
+                        "motorway", "trunk", "primary",
+                        "secondary", "tertiary"
+                    ],
+                    layout: {
+                        "line-cap": "round",
+                        "line-join": "round"
+                    },
+                    paint: {
+                        "line-color": "#c9c9c9",
+                        "line-width": [
+                            "interpolate", ["linear"], ["zoom"],
+                            6, 0.4,
+                            10, 0.9,
+                            14, 1.8,
+                            18, 4
+                        ]
+                    }
+                }
+            ]
+        };
+
         function getViewState() {
             const center = map.getCenter();
 
             return {
                 longitude: center.lng,
                 latitude: center.lat,
-                zoom: map.getZoom() - 1,
+                zoom: map.getZoom(),
                 pitch: 0,
                 bearing: 0
             };
         }
 
         try {
+            map = new maplibregl.Map({
+                container: "basemap",
+                style: simpleStyle,
+                center: [-77.20, 39.13],
+                zoom: 9.4,
+                minZoom: 5,
+                maxZoom: 19,
+                pitch: 0,
+                maxPitch: 0,
+                bearing: 0,
+                dragRotate: false,
+                pitchWithRotate: false,
+                renderWorldCopies: false,
+                attributionControl: true
+            });
+
+            map.touchZoomRotate.disableRotation();
+            map.keyboard.disableRotation();
+
+            map.addControl(
+                new maplibregl.NavigationControl({
+                    showCompass: false
+                }),
+                "top-right"
+            );
+
+            mapTimeout = setTimeout(() => {
+                messages.map =
+                    "Background map is taking too long to load. Check your connection.";
+                updateStatus();
+            }, 20000);
+
+            map.on("load", () => {
+                clearTimeout(mapTimeout);
+                messages.map = "";
+                updateStatus();
+            });
+
+            map.on("error", event => {
+                clearTimeout(mapTimeout);
+
+                const detail = event.error && event.error.message
+                    ? event.error.message
+                    : "Unknown map error";
+
+                messages.map = "Background map error: " + detail;
+                updateStatus();
+                console.error(event.error);
+            });
+
             heat = new deck.Deck({
                 parent: document.getElementById("heat"),
                 width: "100%",
                 height: "100%",
-                controller: false,
                 viewState: getViewState(),
+                controller: false,
                 layers: [
                     new deck.HeatmapLayer({
                         id: "crime-density",
@@ -431,7 +598,7 @@ map_html = r"""
                         getPosition: point => [point[0], point[1]],
                         getWeight: point => point[2].length,
                         aggregation: "SUM",
-                        radiusPixels: 35,
+                        radiusPixels: config.heatRadius,
                         intensity: 1,
                         threshold: 0.03,
                         colorRange: config.colors,
@@ -439,47 +606,41 @@ map_html = r"""
                     })
                 ],
                 onError: error => {
-                    messages.heat =
-                        "Heatmap could not render. Check browser WebGL support.";
+                    messages.heat = "Heatmap rendering failed.";
                     updateStatus();
                     console.error(error);
                 }
             });
+
+            map.on("move", () => {
+                hideTooltip();
+                heat.setProps({viewState: getViewState()});
+            });
+
+            map.on("resize", () => {
+                hideTooltip();
+                heat.setProps({viewState: getViewState()});
+            });
+
         } catch (error) {
-            messages.heat = "Heatmap initialization failed.";
+            clearTimeout(mapTimeout);
+            messages.map = "Map initialization failed: " + error.message;
+            messages.hover = "";
             updateStatus();
             console.error(error);
+            return;
         }
-
-        function synchronize() {
-            hideTooltip();
-
-            if (heat) {
-                heat.setProps({viewState: getViewState()});
-            }
-        }
-
-        map.on("movestart zoomstart", () => {
-            moving = true;
-            hideTooltip();
-        });
-
-        map.on("move zoom resize", synchronize);
-
-        map.on("moveend zoomend", () => {
-            moving = false;
-            synchronize();
-        });
 
         const workerSource = `
             let points = [];
 
             function project(lng, lat) {
-                const s = Math.sin(lat * Math.PI / 180);
+                const sine = Math.sin(lat * Math.PI / 180);
 
                 return [
                     (lng + 180) / 360,
-                    0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)
+                    0.5 - Math.log((1 + sine) / (1 - sine))
+                        / (4 * Math.PI)
                 ];
             }
 
@@ -550,7 +711,7 @@ map_html = r"""
         `;
 
         function dispatchQuery() {
-            if (!ready || busy || !pending || moving) {
+            if (!ready || busy || !pending || map.isMoving()) {
                 return;
             }
 
@@ -564,10 +725,9 @@ map_html = r"""
             ready = false;
             busy = false;
             hideTooltip();
+            clearTimeout(hoverTimeout);
 
-            if (worker) {
-                worker.terminate();
-            }
+            if (worker) worker.terminate();
 
             if (workerURL) {
                 URL.revokeObjectURL(workerURL);
@@ -581,18 +741,25 @@ map_html = r"""
 
         try {
             workerURL = URL.createObjectURL(
-                new Blob([workerSource], {type: "text/javascript"})
+                new Blob([workerSource], {
+                    type: "text/javascript"
+                })
             );
 
             worker = new Worker(workerURL);
             worker.onerror = failWorker;
 
+            hoverTimeout = setTimeout(() => {
+                failWorker(new Error("Hover initialization timed out."));
+            }, 20000);
+
             worker.onmessage = ({data}) => {
                 if (data.type === "ready") {
+                    clearTimeout(hoverTimeout);
                     ready = true;
+                    messages.hover = "";
                     URL.revokeObjectURL(workerURL);
                     workerURL = null;
-                    messages.hover = "";
                     updateStatus();
                     dispatchQuery();
                     return;
@@ -600,7 +767,7 @@ map_html = r"""
 
                 busy = false;
 
-                if (data.token === token && !moving) {
+                if (data.token === token && !map.isMoving()) {
                     tooltip.textContent =
                         "Distinct incidents: "
                         + data.count.toLocaleString("en-US");
@@ -611,7 +778,7 @@ map_html = r"""
                         8,
                         Math.min(
                             data.x + 14,
-                            container.clientWidth - tooltip.offsetWidth - 8
+                            wrapper.clientWidth - tooltip.offsetWidth - 8
                         )
                     ) + "px";
 
@@ -619,7 +786,7 @@ map_html = r"""
                         8,
                         Math.min(
                             data.y + 14,
-                            container.clientHeight - tooltip.offsetHeight - 8
+                            wrapper.clientHeight - tooltip.offsetHeight - 8
                         )
                     ) + "px";
                 }
@@ -631,6 +798,7 @@ map_html = r"""
                 type: "init",
                 points: config.points
             });
+
         } catch (error) {
             failWorker(error);
         }
@@ -640,7 +808,7 @@ map_html = r"""
 
             if (
                 !ready
-                || moving
+                || map.isMoving()
                 || event.originalEvent.buttons
             ) {
                 return;
@@ -649,54 +817,34 @@ map_html = r"""
             const currentToken = token;
 
             timer = setTimeout(() => {
-                if (currentToken !== token || moving) {
+                if (currentToken !== token || map.isMoving()) {
                     return;
                 }
 
                 pending = {
                     type: "query",
                     token: currentToken,
-                    lng: event.latlng.lng,
-                    lat: event.latlng.lat,
-                    radius: 18 / (256 * Math.pow(2, map.getZoom())),
-                    x: event.containerPoint.x,
-                    y: event.containerPoint.y
+                    lng: event.lngLat.lng,
+                    lat: event.lngLat.lat,
+                    radius: config.hoverRadius
+                        / (512 * Math.pow(2, map.getZoom())),
+                    x: event.point.x,
+                    y: event.point.y
                 };
 
                 dispatchQuery();
             }, 100);
         });
 
+        map.on("movestart", hideTooltip);
         map.on("mouseout", hideTooltip);
-        container.addEventListener("pointerleave", hideTooltip);
+        wrapper.addEventListener("pointerleave", hideTooltip);
 
-        const observer = new ResizeObserver(() => {
-            map.invalidateSize({pan: false});
-            synchronize();
+        observer = new ResizeObserver(() => {
+            map.resize();
         });
 
-        observer.observe(container);
-
-        window.addEventListener("pagehide", () => {
-            clearTimeout(timer);
-            clearTimeout(tileTimeout);
-            observer.disconnect();
-
-            if (worker) {
-                worker.terminate();
-            }
-
-            if (workerURL) {
-                URL.revokeObjectURL(workerURL);
-            }
-
-            if (heat) {
-                heat.finalize();
-            }
-
-            map.remove();
-        });
-
+        observer.observe(wrapper);
         updateStatus();
     })();
     </script>
@@ -715,7 +863,9 @@ components.html(
 st.markdown(
     '<div style="display:flex;align-items:center;gap:10px;'
     'margin-top:4px;margin-bottom:10px;">'
-    '<span style="font-size:14px;">Relative crime density: Low</span>'
+    '<span style="font-size:14px;">'
+    'Relative crime density: Low'
+    '</span>'
     '<div style="width:260px;height:14px;border-radius:4px;'
     'background:linear-gradient(to right,'
     'rgb(255,255,178),'
@@ -723,14 +873,15 @@ st.markdown(
     'rgb(254,178,76),'
     'rgb(253,141,60),'
     'rgb(240,59,32),'
-    'rgb(189,0,38));"></div>'
+    'rgb(189,0,38));">'
+    '</div>'
     '<span style="font-size:14px;">High</span>'
     '</div>',
     unsafe_allow_html=True,
 )
 
 
-# 说明热力颜色和悬停数量的含义 / Explain heatmap colors and hover counts.
+# 说明热力颜色与悬停案件数的含义 / Explain heatmap colors and hover incident counts.
 st.caption(
     "Colors show relative crime density. "
     "Hover counts show distinct incidents within 18 screen pixels "
