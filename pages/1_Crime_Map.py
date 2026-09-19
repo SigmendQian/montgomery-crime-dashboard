@@ -127,7 +127,7 @@ st.caption(
 )
 
 
-# 保留可用于地图的有效坐标 / Keep valid coordinates for mapping.
+# 保留有效案件坐标 / Keep valid incident coordinates.
 map_df = filtered_df.loc[
     filtered_df["Valid_Coordinates"].fillna(False),
     ["Incident ID", "Latitude", "Longitude"],
@@ -146,16 +146,12 @@ map_df = map_df.dropna(
 map_df = map_df.loc[
     map_df["Latitude"].between(-85.05112878, 85.05112878)
     & map_df["Longitude"].between(-180, 180)
-]
-
-
-# 删除同一案件在相同位置的重复记录 / Remove duplicate records for the same incident at the same location.
-map_df = map_df.drop_duplicates(
+].drop_duplicates(
     subset=["Incident ID", "Latitude", "Longitude"]
 )
 
 
-# 显示案件总数和地图覆盖率 / Display incident totals and map coverage.
+# 显示案件总数与地图覆盖率 / Display incident totals and map coverage.
 distinct_incidents = filtered_df["Incident ID"].nunique()
 mappable_incidents = map_df["Incident ID"].nunique()
 
@@ -178,14 +174,14 @@ if map_df.empty:
     st.stop()
 
 
-# 为案件生成用于去重统计的整数编号 / Generate integer identifiers for distinct incident counting.
+# 为案件建立用于去重统计的整数编号 / Assign integer identifiers for distinct incident counting.
 map_df["Incident_Key"] = pd.factorize(
     map_df["Incident ID"],
     sort=False,
 )[0]
 
 
-# 合并相同坐标并保留对应案件编号 / Group identical coordinates and retain their incident identifiers.
+# 合并相同位置并保留案件编号 / Group identical locations and retain incident identifiers.
 locations = (
     map_df.groupby(
         ["Latitude", "Longitude"],
@@ -205,7 +201,7 @@ payload = [
 ]
 
 
-# 恢复最初的热力颜色 / Restore the original heatmap colors.
+# 保留最初的六段热力颜色 / Keep the original six heatmap colors.
 colors = [
     [255, 255, 178, 255],
     [254, 217, 118, 255],
@@ -216,15 +212,11 @@ colors = [
 ]
 
 
-# 安全地序列化地图配置 / Safely serialize the map configuration.
+# 安全地传递浏览器地图数据 / Safely pass map data to the browser.
 config_json = json.dumps(
     {
         "points": payload,
         "colors": colors,
-        "mapStyle": (
-            "https://basemaps.cartocdn.com/"
-            "gl/positron-gl-style/style.json"
-        ),
     },
     ensure_ascii=True,
     allow_nan=False,
@@ -232,17 +224,18 @@ config_json = json.dumps(
 ).replace("<", "\\u003c")
 
 
-# 独立加载底图并同步热力图与悬停统计 / Load the basemap independently and synchronize the heatmap and hover counts.
+# 使用图片底图并同步热力图与悬停统计 / Use a raster basemap and synchronize the heatmap and hover counts.
 map_html = r"""
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
 
     <link
         rel="stylesheet"
-        href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
     >
 
     <style>
@@ -250,49 +243,42 @@ map_html = r"""
             margin: 0;
             padding: 0;
             width: 100%;
-            height: 100%;
             font-family: Arial, sans-serif;
         }
 
-        #wrapper {
+        #map {
             position: relative;
             width: 100%;
             height: 700px;
             overflow: hidden;
             border-radius: 8px;
-            background: #f5f5f5;
+            background: #f4f4f4;
         }
 
-        #basemap {
-            position: absolute;
-            inset: 0;
+        #map .leaflet-tile-pane {
+            filter: grayscale(1) brightness(1.05);
         }
 
-        #heatmap {
+        #heat {
             position: absolute;
             inset: 0;
+            z-index: 450;
             pointer-events: none;
-            z-index: 2;
         }
 
-        #heatmap canvas {
+        #heat canvas {
             pointer-events: none !important;
-        }
-
-        .maplibregl-control-container {
-            position: relative;
-            z-index: 5;
         }
 
         #tooltip {
             position: absolute;
             display: none;
+            z-index: 1000;
             pointer-events: none;
-            z-index: 10;
-            padding: 10px 13px;
+            padding: 9px 12px;
             border-radius: 6px;
             background: rgba(30, 30, 30, 0.94);
-            color: white;
+            color: #fff;
             font-size: 14px;
             white-space: nowrap;
         }
@@ -300,81 +286,117 @@ map_html = r"""
         #status {
             position: absolute;
             top: 12px;
-            left: 12px;
-            z-index: 15;
-            max-width: 75%;
+            left: 55px;
+            z-index: 1000;
+            max-width: 70%;
+            pointer-events: none;
             padding: 8px 12px;
             border-radius: 5px;
             background: rgba(255, 255, 255, 0.96);
             color: #444;
             font-size: 13px;
-            pointer-events: none;
         }
     </style>
 </head>
 
 <body>
-    <div id="wrapper">
-        <div id="basemap"></div>
-        <div id="heatmap"></div>
+    <div id="map">
+        <div id="heat"></div>
         <div id="tooltip"></div>
-        <div id="status">Loading background map...</div>
+        <div id="status">Loading map...</div>
     </div>
 
-    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/deck.gl@8.9.36/dist.min.js"></script>
 
     <script>
     (() => {
         const config = __CONFIG__;
-        const wrapper = document.getElementById("wrapper");
+        const container = document.getElementById("map");
         const tooltip = document.getElementById("tooltip");
         const status = document.getElementById("status");
 
-        if (!window.maplibregl || !window.deck) {
+        if (!window.L || !window.deck) {
             status.textContent =
-                "Map libraries failed to load. Check your internet connection.";
+                "Map libraries could not load. Check your connection.";
             return;
         }
 
-        let map;
-        let heat;
-        let worker;
-        let workerURL;
-        let ready = false;
-        let busy = false;
-        let pending = null;
-        let timer = null;
-        let token = 0;
-        let mapLoaded = false;
-        let basemapError = false;
-        let hoverError = false;
-        let heatError = false;
+        const messages = {
+            tiles: "Loading background map...",
+            hover: "Preparing hover counts...",
+            heat: ""
+        };
 
         function updateStatus() {
-            const messages = [];
-
-            if (basemapError) {
-                messages.push(
-                    "Background map could not load. Check your connection and refresh."
-                );
-            } else if (!mapLoaded) {
-                messages.push("Loading background map...");
-            }
-
-            if (heatError) {
-                messages.push("Heatmap could not render.");
-            }
-
-            if (hoverError) {
-                messages.push("Hover counts are unavailable.");
-            } else if (!ready) {
-                messages.push("Preparing hover counts...");
-            }
-
-            status.textContent = messages.join(" ");
-            status.style.display = messages.length ? "block" : "none";
+            const text = Object.values(messages).filter(Boolean).join(" ");
+            status.textContent = text;
+            status.style.display = text ? "block" : "none";
         }
+
+        const map = L.map("map", {
+            center: [39.13, -77.20],
+            zoom: 10.4,
+            minZoom: 6,
+            maxZoom: 19,
+            zoomSnap: 0.1,
+            zoomDelta: 0.5,
+            zoomAnimation: false,
+            fadeAnimation: false,
+            markerZoomAnimation: false,
+            scrollWheelZoom: true,
+            doubleClickZoom: true,
+            touchZoom: true,
+            dragging: true,
+            inertia: false
+        });
+
+        let tilesLoaded = 0;
+
+        const tileTimeout = setTimeout(() => {
+            if (tilesLoaded === 0) {
+                messages.tiles =
+                    "Background map is taking too long to load. Check your connection.";
+                updateStatus();
+            }
+        }, 20000);
+
+        const tiles = L.tileLayer(
+            "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+            {
+                maxZoom: 19,
+                noWrap: true,
+                attribution:
+                    '&copy; <a href="https://www.openstreetmap.org/copyright" '
+                    + 'target="_blank" rel="noopener">'
+                    + 'OpenStreetMap</a> contributors'
+            }
+        );
+
+        tiles.on("tileload", () => {
+            tilesLoaded += 1;
+            clearTimeout(tileTimeout);
+            messages.tiles = "";
+            updateStatus();
+        });
+
+        tiles.on("tileerror", () => {
+            messages.tiles =
+                "Some background tiles failed to load. Try refreshing.";
+            updateStatus();
+        });
+
+        tiles.addTo(map);
+
+        let heat = null;
+        let token = 0;
+        let timer = null;
+        let pending = null;
+        let ready = false;
+        let busy = false;
+        let moving = false;
+        let worker = null;
+        let workerURL = null;
 
         function hideTooltip() {
             token += 1;
@@ -383,75 +405,28 @@ map_html = r"""
             tooltip.style.display = "none";
         }
 
-        function viewState() {
+        function getViewState() {
             const center = map.getCenter();
 
             return {
                 longitude: center.lng,
                 latitude: center.lat,
-                zoom: map.getZoom(),
+                zoom: map.getZoom() - 1,
                 pitch: 0,
                 bearing: 0
             };
         }
 
         try {
-            map = new maplibregl.Map({
-                container: "basemap",
-                style: config.mapStyle,
-                center: [-77.20, 39.13],
-                zoom: 9.4,
-                minZoom: 5,
-                maxZoom: 19,
-                pitch: 0,
-                bearing: 0,
-                maxPitch: 0,
-                dragRotate: false,
-                pitchWithRotate: false,
-                attributionControl: true,
-                renderWorldCopies: false
-            });
-
-            map.touchZoomRotate.disableRotation();
-            map.keyboard.disableRotation();
-
-            map.addControl(
-                new maplibregl.NavigationControl({
-                    showCompass: false,
-                    showZoom: true
-                }),
-                "top-right"
-            );
-
-            map.on("load", () => {
-                mapLoaded = true;
-                basemapError = false;
-                updateStatus();
-            });
-
-            map.on("error", event => {
-                basemapError = true;
-                updateStatus();
-                console.error("Basemap error:", event.error);
-            });
-
-            map.on("idle", () => {
-                if (map.isStyleLoaded() && map.areTilesLoaded()) {
-                    mapLoaded = true;
-                    basemapError = false;
-                    updateStatus();
-                }
-            });
-
             heat = new deck.Deck({
-                parent: document.getElementById("heatmap"),
+                parent: document.getElementById("heat"),
                 width: "100%",
                 height: "100%",
-                viewState: viewState(),
                 controller: false,
+                viewState: getViewState(),
                 layers: [
                     new deck.HeatmapLayer({
-                        id: "crime-heatmap",
+                        id: "crime-density",
                         data: config.points,
                         getPosition: point => [point[0], point[1]],
                         getWeight: point => point[2].length,
@@ -464,39 +439,47 @@ map_html = r"""
                     })
                 ],
                 onError: error => {
-                    heatError = true;
+                    messages.heat =
+                        "Heatmap could not render. Check browser WebGL support.";
                     updateStatus();
-                    console.error("Heatmap error:", error);
+                    console.error(error);
                 }
             });
-
-            map.on("move", () => {
-                hideTooltip();
-                heat.setProps({viewState: viewState()});
-            });
-
-            map.on("resize", () => {
-                hideTooltip();
-                heat.setProps({viewState: viewState()});
-            });
-
         } catch (error) {
-            status.textContent =
-                "Map initialization failed. Refresh or check browser WebGL support.";
+            messages.heat = "Heatmap initialization failed.";
+            updateStatus();
             console.error(error);
-            return;
         }
+
+        function synchronize() {
+            hideTooltip();
+
+            if (heat) {
+                heat.setProps({viewState: getViewState()});
+            }
+        }
+
+        map.on("movestart zoomstart", () => {
+            moving = true;
+            hideTooltip();
+        });
+
+        map.on("move zoom resize", synchronize);
+
+        map.on("moveend zoomend", () => {
+            moving = false;
+            synchronize();
+        });
 
         const workerSource = `
             let points = [];
 
             function project(lng, lat) {
-                const sine = Math.sin(lat * Math.PI / 180);
+                const s = Math.sin(lat * Math.PI / 180);
 
                 return [
                     (lng + 180) / 360,
-                    0.5 - Math.log((1 + sine) / (1 - sine))
-                        / (4 * Math.PI)
+                    0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)
                 ];
             }
 
@@ -534,42 +517,40 @@ map_html = r"""
                     return;
                 }
 
-                if (data.type === "query") {
-                    const xy = project(data.lng, data.lat);
-                    const radius = data.radius;
-                    const ids = new Set();
-                    let index = lowerBound(xy[0] - radius);
+                const xy = project(data.lng, data.lat);
+                const r = data.radius;
+                const ids = new Set();
+                let index = lowerBound(xy[0] - r);
 
-                    while (
-                        index < points.length
-                        && points[index].x <= xy[0] + radius
-                    ) {
-                        const point = points[index];
-                        const dx = point.x - xy[0];
-                        const dy = point.y - xy[1];
+                while (
+                    index < points.length
+                    && points[index].x <= xy[0] + r
+                ) {
+                    const point = points[index];
+                    const dx = point.x - xy[0];
+                    const dy = point.y - xy[1];
 
-                        if (dx * dx + dy * dy <= radius * radius) {
-                            for (const id of point.ids) {
-                                ids.add(id);
-                            }
+                    if (dx * dx + dy * dy <= r * r) {
+                        for (const id of point.ids) {
+                            ids.add(id);
                         }
-
-                        index += 1;
                     }
 
-                    self.postMessage({
-                        type: "result",
-                        token: data.token,
-                        count: ids.size,
-                        x: data.x,
-                        y: data.y
-                    });
+                    index += 1;
                 }
+
+                self.postMessage({
+                    type: "result",
+                    token: data.token,
+                    count: ids.size,
+                    x: data.x,
+                    y: data.y
+                });
             };
         `;
 
         function dispatchQuery() {
-            if (!ready || busy || !pending) {
+            if (!ready || busy || !pending || moving) {
                 return;
             }
 
@@ -582,7 +563,6 @@ map_html = r"""
         function failWorker(error) {
             ready = false;
             busy = false;
-            hoverError = true;
             hideTooltip();
 
             if (worker) {
@@ -594,15 +574,14 @@ map_html = r"""
                 workerURL = null;
             }
 
+            messages.hover = "Hover counts could not initialize.";
             updateStatus();
-            console.error("Hover worker error:", error);
+            console.error(error);
         }
 
         try {
             workerURL = URL.createObjectURL(
-                new Blob([workerSource], {
-                    type: "text/javascript"
-                })
+                new Blob([workerSource], {type: "text/javascript"})
             );
 
             worker = new Worker(workerURL);
@@ -613,49 +592,45 @@ map_html = r"""
                     ready = true;
                     URL.revokeObjectURL(workerURL);
                     workerURL = null;
+                    messages.hover = "";
                     updateStatus();
                     dispatchQuery();
                     return;
                 }
 
-                if (data.type === "result") {
-                    busy = false;
+                busy = false;
 
-                    if (data.token === token && !map.isMoving()) {
-                        tooltip.textContent =
-                            "Distinct incidents: "
-                            + data.count.toLocaleString("en-US");
+                if (data.token === token && !moving) {
+                    tooltip.textContent =
+                        "Distinct incidents: "
+                        + data.count.toLocaleString("en-US");
 
-                        tooltip.style.display = "block";
+                    tooltip.style.display = "block";
 
-                        tooltip.style.left = Math.max(
-                            8,
-                            Math.min(
-                                data.x + 14,
-                                wrapper.clientWidth
-                                    - tooltip.offsetWidth - 8
-                            )
-                        ) + "px";
+                    tooltip.style.left = Math.max(
+                        8,
+                        Math.min(
+                            data.x + 14,
+                            container.clientWidth - tooltip.offsetWidth - 8
+                        )
+                    ) + "px";
 
-                        tooltip.style.top = Math.max(
-                            8,
-                            Math.min(
-                                data.y + 14,
-                                wrapper.clientHeight
-                                    - tooltip.offsetHeight - 8
-                            )
-                        ) + "px";
-                    }
-
-                    dispatchQuery();
+                    tooltip.style.top = Math.max(
+                        8,
+                        Math.min(
+                            data.y + 14,
+                            container.clientHeight - tooltip.offsetHeight - 8
+                        )
+                    ) + "px";
                 }
+
+                dispatchQuery();
             };
 
             worker.postMessage({
                 type: "init",
                 points: config.points
             });
-
         } catch (error) {
             failWorker(error);
         }
@@ -665,47 +640,46 @@ map_html = r"""
 
             if (
                 !ready
-                || map.isMoving()
+                || moving
                 || event.originalEvent.buttons
             ) {
                 return;
             }
 
             const currentToken = token;
-            const point = event.point;
-            const coordinate = event.lngLat;
 
             timer = setTimeout(() => {
-                if (currentToken !== token || map.isMoving()) {
+                if (currentToken !== token || moving) {
                     return;
                 }
 
                 pending = {
                     type: "query",
                     token: currentToken,
-                    lng: coordinate.lng,
-                    lat: coordinate.lat,
-                    radius: 18 / (512 * Math.pow(2, map.getZoom())),
-                    x: point.x,
-                    y: point.y
+                    lng: event.latlng.lng,
+                    lat: event.latlng.lat,
+                    radius: 18 / (256 * Math.pow(2, map.getZoom())),
+                    x: event.containerPoint.x,
+                    y: event.containerPoint.y
                 };
 
                 dispatchQuery();
             }, 100);
         });
 
-        map.on("movestart", hideTooltip);
         map.on("mouseout", hideTooltip);
-        wrapper.addEventListener("pointerleave", hideTooltip);
+        container.addEventListener("pointerleave", hideTooltip);
 
         const observer = new ResizeObserver(() => {
-            map.resize();
+            map.invalidateSize({pan: false});
+            synchronize();
         });
 
-        observer.observe(wrapper);
+        observer.observe(container);
 
         window.addEventListener("pagehide", () => {
             clearTimeout(timer);
+            clearTimeout(tileTimeout);
             observer.disconnect();
 
             if (worker) {
@@ -716,7 +690,10 @@ map_html = r"""
                 URL.revokeObjectURL(workerURL);
             }
 
-            heat.finalize();
+            if (heat) {
+                heat.finalize();
+            }
+
             map.remove();
         });
 
@@ -734,13 +711,11 @@ components.html(
 )
 
 
-# 恢复最初位于地图下方的颜色比例尺 / Restore the original color legend below the map.
+# 保留原来的热力颜色比例尺 / Keep the original heatmap color legend.
 st.markdown(
     '<div style="display:flex;align-items:center;gap:10px;'
     'margin-top:4px;margin-bottom:10px;">'
-    '<span style="font-size:14px;">'
-    'Relative crime density: Low'
-    '</span>'
+    '<span style="font-size:14px;">Relative crime density: Low</span>'
     '<div style="width:260px;height:14px;border-radius:4px;'
     'background:linear-gradient(to right,'
     'rgb(255,255,178),'
@@ -748,19 +723,18 @@ st.markdown(
     'rgb(254,178,76),'
     'rgb(253,141,60),'
     'rgb(240,59,32),'
-    'rgb(189,0,38));">'
-    '</div>'
+    'rgb(189,0,38));"></div>'
     '<span style="font-size:14px;">High</span>'
     '</div>',
     unsafe_allow_html=True,
 )
 
 
-# 说明颜色和悬停数量的统计含义 / Explain the meaning of colors and hover counts.
+# 说明热力颜色和悬停数量的含义 / Explain heatmap colors and hover counts.
 st.caption(
     "Colors show relative crime density. "
     "Hover counts show distinct incidents within 18 screen pixels "
-    "of the cursor. This covers a larger geographic area when zoomed out. "
+    "of the cursor, covering a larger geographic area when zoomed out. "
     "Repeated offense rows for the same incident at the same location "
     "are counted only once."
 )
