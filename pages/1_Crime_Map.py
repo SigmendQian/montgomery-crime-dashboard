@@ -1,5 +1,3 @@
-CARTO_API_KEY = "cb1_3q90_1_c278066154a49d58ab9d72c0"
-
 import json
 
 import pandas as pd
@@ -10,23 +8,8 @@ from data_service import load_and_clean_data
 from ui import setup_page, load_with_message, source_caption
 
 
-# 设置页面并读取可选的密钥配置 / Set up the page and read optional secret configuration.
+# 设置页面 / Set up the page.
 setup_page("Crime Map", "🗺️")
-
-if not CARTO_API_KEY.strip():
-    try:
-        CARTO_API_KEY = str(st.secrets["CARTO_API_KEY"]).strip()
-    except (FileNotFoundError, KeyError):
-        CARTO_API_KEY = ""
-
-CARTO_API_KEY = CARTO_API_KEY.strip()
-
-if not CARTO_API_KEY:
-    st.info(
-        "Please set CARTO_API_KEY at the top of this file "
-        "or in Streamlit Secrets."
-    )
-    st.stop()
 
 
 # 加载在线案件数据 / Load online incident data.
@@ -222,7 +205,6 @@ payload = [
 
 # 保留原始热力颜色并设置悬停范围 / Keep the original heatmap colors and set the hover radius.
 config = {
-    "apiKey": CARTO_API_KEY,
     "points": payload,
     "colors": [
         [255, 255, 178, 255],
@@ -244,7 +226,7 @@ config_json = json.dumps(
 ).replace("<", "\\u003c")
 
 
-# 创建 CARTO 无标签底图和交互热力图 / Create a CARTO label-free basemap and interactive heatmap.
+# 创建无标签道路水系底图和交互热力图 / Create a label-free roads-and-water basemap and interactive heatmap.
 map_html = r"""
 <!DOCTYPE html>
 <html>
@@ -349,7 +331,7 @@ map_html = r"""
         }
 
         const messages = {
-            map: "Loading CARTO background...",
+            map: "Loading background map...",
             heat: "",
             hover: "Preparing hover counts..."
         };
@@ -360,38 +342,21 @@ map_html = r"""
             status.style.display = text ? "block" : "none";
         }
 
-        function cartoRequest(url) {
-            const parsed = new URL(url, window.location.href);
-
-            if (
-                parsed.protocol === "https:"
-                && (
-                    parsed.hostname === "basemaps.cartocdn.com"
-                    || parsed.hostname.endsWith(".basemaps.cartocdn.com")
-                )
-            ) {
-                parsed.searchParams.set("key", config.apiKey);
-                return {url: parsed.toString()};
-            }
-
-            return {url};
-        }
-
         const simpleStyle = {
             version: 8,
-            name: "CARTO Roads and Water",
+            name: "OpenFreeMap Roads and Water",
             sources: {
-                carto: {
+                openmaptiles: {
                     type: "vector",
-                    url:
-                        "https://tiles.basemaps.cartocdn.com/"
-                        + "vector/carto.streets/v1/tiles.json",
+                    url: "https://tiles.openfreemap.org/planet",
                     attribution:
-                        '&copy; <a href="https://www.openstreetmap.org/copyright" '
-                        + 'target="_blank" rel="noopener">OpenStreetMap</a> '
-                        + 'contributors &copy; '
-                        + '<a href="https://carto.com/attributions" '
-                        + 'target="_blank" rel="noopener">CARTO</a>'
+                        '<a href="https://openfreemap.org/" '
+                        + 'target="_blank" rel="noopener">OpenFreeMap</a> '
+                        + '&copy; <a href="https://openmaptiles.org/" '
+                        + 'target="_blank" rel="noopener">OpenMapTiles</a> '
+                        + 'Data from '
+                        + '<a href="https://www.openstreetmap.org/copyright" '
+                        + 'target="_blank" rel="noopener">OpenStreetMap</a>'
                 }
             },
             layers: [
@@ -405,7 +370,7 @@ map_html = r"""
                 {
                     id: "water",
                     type: "fill",
-                    source: "carto",
+                    source: "openmaptiles",
                     "source-layer": "water",
                     paint: {
                         "fill-color": "#d4dfe4",
@@ -415,7 +380,7 @@ map_html = r"""
                 {
                     id: "waterways",
                     type: "line",
-                    source: "carto",
+                    source: "openmaptiles",
                     "source-layer": "waterway",
                     layout: {
                         "line-cap": "round",
@@ -435,7 +400,7 @@ map_html = r"""
                 {
                     id: "minor-roads",
                     type: "line",
-                    source: "carto",
+                    source: "openmaptiles",
                     "source-layer": "transportation",
                     minzoom: 11,
                     filter: [
@@ -458,7 +423,7 @@ map_html = r"""
                 {
                     id: "main-roads",
                     type: "line",
-                    source: "carto",
+                    source: "openmaptiles",
                     "source-layer": "transportation",
                     filter: [
                         "in", "class",
@@ -531,7 +496,6 @@ map_html = r"""
             map = new maplibregl.Map({
                 container: "basemap",
                 style: simpleStyle,
-                transformRequest: cartoRequest,
                 center: [-77.20, 39.13],
                 zoom: 9.4,
                 minZoom: 5,
@@ -557,7 +521,7 @@ map_html = r"""
 
             mapTimeout = setTimeout(() => {
                 messages.map =
-                    "CARTO is taking too long to load. Check your connection.";
+                    "Background map is taking too long to load. Check your connection.";
                 updateStatus();
             }, 20000);
 
@@ -573,16 +537,10 @@ map_html = r"""
                 const error = event.error || {};
                 const code = error.status || error.statusCode;
 
-                if (code === 401 || code === 403) {
-                    messages.map =
-                        "CARTO authorization failed. Check your Basemaps API key "
-                        + "and its allowed domains.";
-                } else {
-                    messages.map =
-                        "CARTO background failed to load"
-                        + (code ? " (HTTP " + code + ")" : "")
-                        + ". Check the key and connection.";
-                }
+                messages.map =
+                    "Background map failed to load"
+                    + (code ? " (HTTP " + code + ")" : "")
+                    + ". Check your connection.";
 
                 updateStatus();
             });
