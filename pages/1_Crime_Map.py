@@ -236,7 +236,7 @@ map_html = r"""
 
     <link
         rel="stylesheet"
-        href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"
+        href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css"
     >
 
     <style>
@@ -314,7 +314,7 @@ map_html = r"""
         <div id="status">Loading map...</div>
     </div>
 
-    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
     <script src="https://unpkg.com/deck.gl@8.9.36/dist.min.js"></script>
 
     <script>
@@ -343,7 +343,7 @@ map_html = r"""
         }
 
         const OPENFREEMAP_STYLE =
-            "https://tiles.openfreemap.org/styles/positron";
+            "https://tiles.openfreemap.org/styles/liberty";
 
         let map;
         let heat;
@@ -427,36 +427,35 @@ map_html = r"""
                 const layers = style && style.layers ? style.layers : [];
 
                 for (const layer of layers) {
-                    const sourceLayer = layer["source-layer"] || "";
                     const layerId = String(layer.id || "").toLowerCase();
+                    const sourceLayer = String(
+                        layer["source-layer"] || ""
+                    ).toLowerCase();
 
-                    const keepBackground =
-                        layer.type === "background";
+                    const hideLabels =
+                        layer.type === "symbol";
 
-                    const keepWater =
-                        (
-                            sourceLayer === "water"
-                            || sourceLayer === "waterway"
-                        )
-                        && (
-                            layer.type === "fill"
-                            || layer.type === "line"
-                        );
+                    const hideBuildings =
+                        sourceLayer.includes("building")
+                        || layerId.includes("building");
 
-                    const keepRoad =
-                        sourceLayer === "transportation"
-                        && layer.type === "line"
-                        && !(
-                            layerId.includes("rail")
-                            || layerId.includes("transit")
-                            || layerId.includes("aeroway")
-                            || layerId.includes("runway")
-                        );
+                    const hideLandDetail =
+                        sourceLayer.includes("landcover")
+                        || sourceLayer.includes("landuse")
+                        || sourceLayer.includes("park")
+                        || layerId.includes("landcover")
+                        || layerId.includes("landuse")
+                        || layerId.includes("park");
+
+                    const hideBoundaries =
+                        sourceLayer.includes("boundary")
+                        || layerId.includes("boundary");
 
                     if (
-                        !keepBackground
-                        && !keepWater
-                        && !keepRoad
+                        hideLabels
+                        || hideBuildings
+                        || hideLandDetail
+                        || hideBoundaries
                     ) {
                         try {
                             map.setLayoutProperty(
@@ -481,10 +480,15 @@ map_html = r"""
                 const error = event.error || {};
                 const code = error.status || error.statusCode;
 
+                const message =
+                    error.message
+                    ? " " + error.message
+                    : "";
+
                 messages.map =
                     "Background map failed to load"
                     + (code ? " (HTTP " + code + ")" : "")
-                    + ". Check your connection.";
+                    + message;
 
                 updateStatus();
             });
